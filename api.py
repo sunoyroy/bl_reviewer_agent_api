@@ -23,6 +23,18 @@ from .agent import build_bl_reviewer_agent, OpenAICompatibleBLReviewerAgent
 from .input_parser import parse_review_request
 
 
+class N8nReviewPayload(BaseModel):
+    offer_id: str | None = Field(default=None)
+    title: str | None = Field(default=None)
+    mcat: str | None = Field(default=None)
+    isq_filled: dict[str, Any] | str | None = Field(default=None)
+    isq_asked: dict[str, Any] | list[str] | None = Field(default=None)
+    eto_ofr_display_id: str | None = Field(default=None)
+    eto_ofr_title: str | None = Field(default=None)
+    glcat_mcat_name: str | None = Field(default=None)
+    attributes_combined: str | None = Field(default=None)
+
+
 LOGGER = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -93,6 +105,11 @@ def _get_agent() -> Any:
 # Endpoints
 # ---------------------------------------------------------------------------
 
+@app.get("/", tags=["Health"])
+def root() -> dict[str, str]:
+    return {"status": "ok", "message": "BL Reviewer Agent API is running"}
+
+
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 def health() -> HealthResponse:
     """Check that the service is running and environment is configured."""
@@ -105,7 +122,7 @@ def health() -> HealthResponse:
 
 
 @app.post("/review", response_model=ReviewResult, tags=["Review"])
-def review_single(body: ReviewRequest) -> ReviewResult:
+def review_single(body: N8nReviewPayload) -> ReviewResult:
     """
     Review a single buy lead.
 
