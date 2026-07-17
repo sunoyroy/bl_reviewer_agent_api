@@ -126,7 +126,7 @@ class HealthResponse(BaseModel):
 def _get_agent() -> OpenAICompatibleBLReviewerAgent:
     api_key = os.getenv("LLM_GATEWAY_API_KEY")
     base_url = os.getenv("LLM_GATEWAY_BASE_URL", "https://imllm.intermesh.net/v1")
-    model = os.getenv("LLM_GATEWAY_MODEL", "flex/openrouter/google/gemini-3-flash-preview")
+    model = os.getenv("LLM_GATEWAY_MODEL", "google/gemini-3-flash-preview")
     return build_bl_reviewer_agent(model=model, api_key=api_key, base_url=base_url)
 
 
@@ -142,7 +142,7 @@ def root() -> dict[str, str]:
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 def health() -> HealthResponse:
     """Check that the service is running and environment is configured."""
-    model = os.getenv("LLM_GATEWAY_MODEL", "flex/openrouter/google/gemini-3-flash-preview")
+    model = os.getenv("LLM_GATEWAY_MODEL", "google/gemini-3-flash-preview")
     return HealthResponse(
         status="ok",
         model=model,

@@ -68,7 +68,7 @@ Accepts both structured and CSV-style fields.
 ```powershell
 $env:LLM_GATEWAY_API_KEY  = "your-api-key"              # Required
 $env:LLM_GATEWAY_BASE_URL = "https://imllm.intermesh.net/v1"  # Default shown
-$env:LLM_GATEWAY_MODEL    = "flex/openrouter/google/gemini-3-flash-preview"   # Default shown
+$env:LLM_GATEWAY_MODEL    = "google/gemini-3-flash-preview"   # Default shown
 ```
 
 ---
@@ -89,7 +89,7 @@ uvicorn bl_reviewer_agent.api:app --host 0.0.0.0 --port 8000 --reload
 curl http://localhost:8000/health
 ```
 ```json
-{"status": "ok", "model": "flex/openrouter/google/gemini-3-flash-preview", "base_url": "https://imllm.intermesh.net/v1"}
+{"status": "ok", "model": "google/gemini-3-flash-preview", "base_url": "https://imllm.intermesh.net/v1"}
 ```
 
 #### `POST /review` — Single lead
@@ -172,7 +172,7 @@ python -m bl_reviewer_agent.batch_review --input "C:\path\to\offers.csv" --outpu
 python -m bl_reviewer_agent.batch_review --input leads.json --output-dir outputs\bl_reviewer_agent_batch
 
 # Multiple models
-python -m bl_reviewer_agent.batch_review --input leads.json --models flex/openrouter/google/gemini-3-flash-preview google/gemini-2.5-flash-lite
+python -m bl_reviewer_agent.batch_review --input leads.json --models google/gemini-3-flash-preview google/gemini-2.5-flash-lite
 ```
 
 Outputs per model:
@@ -192,7 +192,7 @@ from bl_reviewer_agent.agent import build_bl_reviewer_agent
 from bl_reviewer_agent.input_parser import parse_review_request
 
 agent = build_bl_reviewer_agent(
-    model="flex/openrouter/google/gemini-3-flash-preview",
+    model="google/gemini-3-flash-preview",
     api_key="your-api-key",
     base_url="https://imllm.intermesh.net/v1",
 )

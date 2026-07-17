@@ -16,7 +16,7 @@ from .input_parser import parse_review_request
 from .prompt import BATCH_SYSTEM_PROMPT
 
 
-DEFAULT_MODEL = "flex/openrouter/google/gemini-3-flash-preview"
+DEFAULT_MODEL = "google/gemini-3-flash-preview"
 DEFAULT_BASE_URL = "https://imllm.intermesh.net/v1"
 
 
