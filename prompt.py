@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
-from models.schemas import BuyLeadReviewerRequest
+try:
+    from models.schemas import BuyLeadReviewerRequest
+except Exception:  # pragma: no cover - fallback for standalone deployments
+    class BuyLeadReviewerRequest(dict):
+        def model_dump(self, mode: str = "python") -> dict[str, Any]:
+            return dict(self)
 
 
 # REVIEWER_SYSTEM_PROMPT = """You are Buy Lead Reviewer Agent.
