@@ -1,0 +1,165 @@
+"""
+FastAPI application for the Buy Lead Reviewer Agent.
+
+Run with:
+    uvicorn bl_reviewer_agent.api:app --host 0.0.0.0 --port 8000
+
+Endpoints:
+    POST /review       - Review a single buy lead
+    POST /batch        - Review multiple buy leads
+    GET  /health       - Health check
+"""
+from __future__ import annotations
+
+import logging
+import os
+from typing import Any
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+from .agent import build_bl_reviewer_agent, OpenAICompatibleBLReviewerAgent
+from .input_parser import parse_review_request
+
+
+LOGGER = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# App setup
+# ---------------------------------------------------------------------------
+
+app = FastAPI(
+    title="Buy Lead Reviewer Agent API",
+    description="Reviews IndiaMART buy leads for title/mcat/ISQ consistency.",
+    version="1.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---------------------------------------------------------------------------
+# Pydantic models
+# ---------------------------------------------------------------------------
+
+class ReviewRequest(BaseModel):
+    """Structured payload for lead review."""
+
+    # Structured fields
+    offer_id: str | None = Field(default=None, examples=["146420001285"])
+    title: str | None = Field(default=None, examples=["BOPP Synthetic Non Tearable Sheets"])
+    mcat: str | None = Field(default=None, examples=["Non Tearable Paper"])
+    isq_filled: dict[str, Any] | str | None = Field(default=None)
+    isq_asked: dict[str, Any] | list[str] | None = Field(default=None)
+
+
+class ReviewResult(BaseModel):
+    offer_id: str | None = Field(default=None, examples=["146420001285"])
+    flags: list[str]
+    concise_reason: str
+
+
+class BatchRequest(BaseModel):
+    leads: list[ReviewRequest]
+
+
+class BatchResult(BaseModel):
+    results: list[ReviewResult]
+
+
+class HealthResponse(BaseModel):
+    status: str
+    model: str
+    base_url: str
+
+
+# ---------------------------------------------------------------------------
+# Agent singleton
+# ---------------------------------------------------------------------------
+
+def _get_agent() -> Any:
+    api_key = os.getenv("LLM_GATEWAY_API_KEY")
+    base_url = os.getenv("LLM_GATEWAY_BASE_URL", "https://imllm.intermesh.net/v1")
+    model = os.getenv("LLM_GATEWAY_MODEL", "flex/openrouter/google/gemini-3-flash-preview")
+    return build_bl_reviewer_agent(model=model, api_key=api_key, base_url=base_url)
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/health", response_model=HealthResponse, tags=["Health"])
+def health() -> HealthResponse:
+    """Check that the service is running and environment is configured."""
+    model = os.getenv("LLM_GATEWAY_MODEL", "flex/openrouter/google/gemini-3-flash-preview")
+    return HealthResponse(
+        status="ok",
+        model=model,
+        base_url=os.getenv("LLM_GATEWAY_BASE_URL", "https://imllm.intermesh.net/v1"),
+    )
+
+
+@app.post("/review", response_model=ReviewResult, tags=["Review"])
+def review_single(body: ReviewRequest) -> ReviewResult:
+    """
+    Review a single buy lead.
+
+    Accepts structured fields: `offer_id`, `title`, `mcat`, `isq_filled`, `isq_asked`.
+
+    Returns:
+    - **flags**: list of flag names that were raised
+    - **concise_reason**: short human-readable explanation (< 20 words)
+    """
+    agent = _get_agent()
+    payload = body.model_dump(exclude_none=True)
+    try:
+        request = parse_review_request(payload)
+        result = agent.review(request)
+    except Exception as exc:
+        LOGGER.exception("Review failed for offer_id=%s", body.offer_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return ReviewResult(
+        offer_id=result.get("offer_id"),
+        flags=result["flags"],
+        concise_reason=result["concise_reason"],
+    )
+
+
+@app.post("/batch", response_model=BatchResult, tags=["Review"])
+def review_batch(body: BatchRequest) -> BatchResult:
+    """
+    Review multiple buy leads in one call.
+
+    Each lead in the `leads` array is reviewed independently.
+    Results are returned in the same order as the input.
+    """
+    agent = _get_agent()
+    results: list[ReviewResult] = []
+    for lead in body.leads:
+        payload = lead.model_dump(exclude_none=True)
+        try:
+            request = parse_review_request(payload)
+            result = agent.review(request)
+            results.append(
+                ReviewResult(
+                    offer_id=result.get("offer_id"),
+                    flags=result["flags"],
+                    concise_reason=result["concise_reason"],
+                )
+            )
+        except Exception as exc:
+            offer_id = lead.offer_id or ""
+            LOGGER.exception("Review failed for offer_id=%s", offer_id)
+            results.append(
+                ReviewResult(
+                    offer_id=offer_id,
+                    flags=[],
+                    concise_reason=f"Error: {str(exc)[:120]}",
+                )
+            )
+    return BatchResult(results=results)
