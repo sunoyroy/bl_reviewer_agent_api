@@ -15,9 +15,12 @@ import logging
 import os
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+import traceback
+import sys
 
 try:
     from .agent import build_bl_reviewer_agent, OpenAICompatibleBLReviewerAgent
@@ -57,6 +60,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+def global_exception_handler(request: Request, exc: Exception):
+    """Return a JSON response containing the stack trace for debugging on Vercel.
+
+    NOTE: This exposes internal traces and should be removed or restricted in
+    production. It's intended to help debug the Vercel serverless function crash.
+    """
+    tb = traceback.format_exc()
+    LOGGER.exception("Unhandled exception: %s", exc)
+    return JSONResponse(status_code=500, content={"detail": "FUNCTION_INVOCATION_FAILED", "trace": tb})
+
+
+@app.get("/debug", tags=["Debug"])
+def debug_info() -> dict[str, str]:
+    """Small debug endpoint returning Python and environment hints."""
+    return {
+        "python": sys.version.splitlines()[0],
+        "model_env": os.getenv("LLM_GATEWAY_MODEL", "<unset>"),
+        "llm_key_present": "yes" if os.getenv("LLM_GATEWAY_API_KEY") else "no",
+    }
 
 
 # ---------------------------------------------------------------------------
