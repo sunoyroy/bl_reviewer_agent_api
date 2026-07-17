@@ -39,12 +39,18 @@ def load_payload(args: argparse.Namespace) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    api_key = os.getenv("LLM_GATEWAY_API_KEY")
+    
+    if not api_key:
+        print("Error: Missing LLM_GATEWAY_API_KEY environment variable. Local processing is no longer supported.", file=sys.stderr)
+        return 2
+
     try:
         payload = load_payload(args)
         request = parse_review_request(payload)
         agent = build_bl_reviewer_agent(
             model=args.model,
-            api_key=os.getenv("LLM_GATEWAY_API_KEY"),
+            api_key=api_key,
             base_url=args.base_url,
         )
         report = agent.review(request)

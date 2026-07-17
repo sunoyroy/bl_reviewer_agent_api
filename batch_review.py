@@ -12,8 +12,7 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 from typing import Any
-# from .input_parser import csv_row_to_lead
-from .input_parser import csv_row_to_lead, parse_review_request
+from .input_parser import parse_review_request
 from .prompt import BATCH_SYSTEM_PROMPT
 
 
@@ -22,10 +21,8 @@ DEFAULT_BASE_URL = "https://imllm.intermesh.net/v1"
 
 
 def parse_args() -> argparse.Namespace:
-    # parser = argparse.ArgumentParser(description="Run BL reviewer over a CSV through an LLM gateway.")
-    # parser.add_argument("--input", required=True, type=Path, help="Input CSV path.")
-    parser = argparse.ArgumentParser(description="Run BL reviewer over a JSON/CSV through an LLM gateway.")
-    parser.add_argument("--input", type=Path, help="Input CSV or JSON path.")
+    parser = argparse.ArgumentParser(description="Run BL reviewer over a JSON payload through an LLM gateway.")
+    parser.add_argument("--input", type=Path, help="Input JSON path.")
     parser.add_argument("--json", help="One JSON payload as a string.")
     parser.add_argument("--output-dir", default=Path("outputs") / "bl_reviewer_agent_batch", type=Path)
     parser.add_argument("--base-url", default=os.getenv("LLM_GATEWAY_BASE_URL", DEFAULT_BASE_URL))
@@ -43,71 +40,61 @@ def main() -> int:
         print("Missing LLM_GATEWAY_API_KEY.", file=sys.stderr)
         return 2
 
-    # Check if we should process the input as a JSON payload or fall back to CSV.
-    # We treat it as JSON if --json is provided, the input file suffix is not .csv, or data is piped via stdin.
-    is_json = False
+    raw_payload = None
     if args.json:
-        is_json = True
+        raw_payload = json.loads(args.json)
     elif args.input:
-        is_json = args.input.suffix.lower() != ".csv"
+        if args.input.suffix.lower() == ".csv":
+            print("Error: CSV input is no longer supported. Please provide a JSON payload.", file=sys.stderr)
+            return 2
+        raw_payload = json.loads(args.input.read_text(encoding="utf-8"))
     elif not sys.stdin.isatty():
-        is_json = True
+        raw = sys.stdin.read().strip()
+        if raw:
+            raw_payload = json.loads(raw)
     else:
         print("Error: Provide input using --input, --json, or stdin.", file=sys.stderr)
         return 2
 
-    if is_json:
-        # Load the raw payload from the appropriate source: --json string, --input JSON file, or stdin pipe
-        raw_payload = None
-        if args.json:
-            raw_payload = json.loads(args.json)
-        elif args.input:
-            raw_payload = json.loads(args.input.read_text(encoding="utf-8"))
-        elif not sys.stdin.isatty():
-            raw = sys.stdin.read().strip()
-            if raw:
-                raw_payload = json.loads(raw)
+    if raw_payload is None:
+        print("Error: Empty JSON input.", file=sys.stderr)
+        return 2
 
-        if raw_payload is None:
-            print("Error: Empty JSON input.", file=sys.stderr)
-            return 2
-
-        # Extract list of leads from raw JSON: can be a direct list, wrapped in {"leads": [...]}, or a single lead dict
-        if isinstance(raw_payload, list):
-            parsed_leads = raw_payload
-        elif isinstance(raw_payload, dict):
-            if "leads" in raw_payload and isinstance(raw_payload["leads"], list):
-                parsed_leads = raw_payload["leads"]
-            else:
-                parsed_leads = [raw_payload]
+    # Extract list of leads from raw JSON: can be a direct list, wrapped in {"leads": [...]}, or a single lead dict
+    if isinstance(raw_payload, list):
+        parsed_leads = raw_payload
+    elif isinstance(raw_payload, dict):
+        if "leads" in raw_payload and isinstance(raw_payload["leads"], list):
+            parsed_leads = raw_payload["leads"]
         else:
-            print("Error: Invalid JSON format.", file=sys.stderr)
-            return 2
-
-        leads = []
-        rows = []
-        for item in parsed_leads:
-            # Parse the lead into standard review request format
-            lead = parse_review_request(item)
-            # Ensure the unique offer_id identifier is promoted to the root level
-            if "offer_id" not in lead and "metadata" in lead and "offer_id" in lead["metadata"]:
-                lead["offer_id"] = lead["metadata"]["offer_id"]
-            leads.append(lead)
-
-            # Reconstruct mock row mimicking CSV columns to remain compatible with CSV writers downstream
-            row = {
-                "eto_ofr_display_id": str(lead.get("offer_id") or ""),
-                "eto_ofr_title": lead.get("title", ""),
-                "glcat_mcat_name": lead.get("mcat", ""),
-                "attributes_combined": "; ".join(f"{k}: {v}" for k, v in lead.get("isq_filled", {}).items()),
-            }
-            rows.append(row)
+            parsed_leads = [raw_payload]
     else:
-        # Standard legacy fallback to read directly from a CSV file
-        rows = read_csv(args.input)
-        if args.limit:
-            rows = rows[: args.limit]
-        leads = [csv_row_to_lead(row) for row in rows]
+        print("Error: Invalid JSON format.", file=sys.stderr)
+        return 2
+
+    leads = []
+    rows = []
+    for item in parsed_leads:
+        # Parse the lead into standard review request format
+        lead = parse_review_request(item)
+        # Ensure the unique offer_id identifier is promoted to the root level
+        if "offer_id" not in lead and "metadata" in lead and "offer_id" in lead["metadata"]:
+            lead["offer_id"] = lead["metadata"]["offer_id"]
+        leads.append(lead)
+
+        # Reconstruct mock row mimicking CSV columns to remain compatible with CSV writers downstream
+        row = {
+            "eto_ofr_display_id": str(lead.get("offer_id") or ""),
+            "eto_ofr_title": lead.get("title", ""),
+            "glcat_mcat_name": lead.get("mcat", ""),
+            "attributes_combined": "; ".join(f"{k}: {v}" for k, v in lead.get("isq_filled", {}).items()),
+        }
+        rows.append(row)
+
+    if args.limit:
+        leads = leads[: args.limit]
+        rows = rows[: args.limit]
+
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     all_model_results: dict[str, dict[str, dict[str, Any]]] = {}
@@ -139,11 +126,6 @@ def main() -> int:
     print(json.dumps(summary, indent=2, ensure_ascii=True))
     print(f"Combined CSV: {combined_path}")
     return 0
-
-
-def read_csv(path: Path) -> list[dict[str, str]]:
-    with path.open("r", newline="", encoding="utf-8-sig") as handle:
-        return list(csv.DictReader(handle))
 
 
 def run_model(

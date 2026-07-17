@@ -123,7 +123,7 @@ class HealthResponse(BaseModel):
 # Agent singleton
 # ---------------------------------------------------------------------------
 
-def _get_agent() -> Any:
+def _get_agent() -> OpenAICompatibleBLReviewerAgent:
     api_key = os.getenv("LLM_GATEWAY_API_KEY")
     base_url = os.getenv("LLM_GATEWAY_BASE_URL", "https://imllm.intermesh.net/v1")
     model = os.getenv("LLM_GATEWAY_MODEL", "flex/openrouter/google/gemini-3-flash-preview")

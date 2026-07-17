@@ -12,75 +12,6 @@ except ImportError:  # pragma: no cover - supports Vercel top-level module impor
     from prompt import BATCH_SYSTEM_PROMPT, build_reviewer_prompt
 
 
-def _normalize_text(text: str) -> str:
-    text = text.lower()
-    text = re.sub(r"[^a-z0-9]+", " ", text)
-    return " ".join(text.split())
-
-
-def _tokenize(text: str) -> set[str]:
-    stopwords = {
-        "a",
-        "an",
-        "and",
-        "for",
-        "of",
-        "the",
-        "to",
-        "with",
-        "in",
-        "on",
-        "is",
-        "are",
-        "be",
-        "it",
-        "this",
-        "that",
-        "these",
-        "those",
-        "from",
-        "or",
-    }
-    return {
-        token
-        for token in _normalize_text(text).split()
-        if token and token not in stopwords
-    }
-
-
-class LocalBLReviewerAgent:
-    def __init__(self, model: str, base_url: str | None = None) -> None:
-        self.model = model
-        self.base_url = (base_url or "").rstrip("/")
-
-    def review(self, request: dict[str, Any]) -> dict[str, Any]:
-        offer_id = str(request.get("offer_id") or request.get("metadata", {}).get("offer_id") or "")
-        title = str(request.get("title") or request.get("metadata", {}).get("title") or "")
-        mcat = str(request.get("mcat") or request.get("metadata", {}).get("mcat") or "")
-
-        flags: list[str] = []
-        concise_reason = "Title and mcat are consistent."
-
-        if title and mcat:
-            title_tokens = _tokenize(title)
-            mcat_tokens = _tokenize(mcat)
-            if title_tokens and mcat_tokens and not (title_tokens & mcat_tokens):
-                flags.append("title_mcat_mismatch")
-                concise_reason = "Title and mcat appear inconsistent."
-            elif _normalize_text(title) != _normalize_text(mcat):
-                if " " in title and " " in mcat:
-                    shared_tokens = title_tokens & mcat_tokens
-                    if not shared_tokens:
-                        flags.append("title_mcat_mismatch")
-                        concise_reason = "Title and mcat appear inconsistent."
-
-        return {
-            "offer_id": offer_id,
-            "flags": flags,
-            "concise_reason": concise_reason,
-        }
-
-
 class OpenAICompatibleBLReviewerAgent:
     def __init__(self, model: str, api_key: str, base_url: str) -> None:
         self.model = model
@@ -135,9 +66,9 @@ def build_bl_reviewer_agent(
     model: str,
     api_key: str | None,
     base_url: str | None,
-) -> OpenAICompatibleBLReviewerAgent | LocalBLReviewerAgent:
+) -> OpenAICompatibleBLReviewerAgent:
     if not api_key:
-        return LocalBLReviewerAgent(model=model, base_url=base_url)
+        raise ValueError("API key is required.")
     if not base_url:
         raise ValueError("LLM base URL is required. Set LLM_GATEWAY_BASE_URL.")
     return OpenAICompatibleBLReviewerAgent(model=model, api_key=api_key, base_url=base_url)
