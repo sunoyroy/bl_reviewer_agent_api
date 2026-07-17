@@ -60,7 +60,7 @@ Return only valid JSON in this exact structure:
 {
   
   "flags": ["title_mcat_mismatch", "isq_filled_title_mismatch", "isq_filled_mcat_mismatch"],
-  "concise_reason": "Less than 20 words if there is flag else return nothing"
+  "concise_reason": if flags is empty, return null; otherwise, return reason less than 20 words
 }
 """
 
