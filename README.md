@@ -205,7 +205,7 @@ payload = {
 }
 request = parse_review_request(payload)
 result = agent.review(request)
-# {"offer_id": "146420001285", "flags": [], "concise_reason": "..."}
+# {"flags": [], "concise_reason": "..."}
 ```
 ## how to give input
 ```python
