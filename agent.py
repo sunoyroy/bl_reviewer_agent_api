@@ -6,7 +6,10 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from .prompt import BATCH_SYSTEM_PROMPT, build_reviewer_prompt
+try:
+    from .prompt import BATCH_SYSTEM_PROMPT, build_reviewer_prompt
+except ImportError:  # pragma: no cover - supports Vercel top-level module import
+    from prompt import BATCH_SYSTEM_PROMPT, build_reviewer_prompt
 
 
 def _normalize_text(text: str) -> str:

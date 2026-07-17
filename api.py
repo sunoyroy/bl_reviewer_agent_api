@@ -19,8 +19,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .agent import build_bl_reviewer_agent, OpenAICompatibleBLReviewerAgent
-from .input_parser import parse_review_request
+try:
+    from .agent import build_bl_reviewer_agent, OpenAICompatibleBLReviewerAgent
+    from .input_parser import parse_review_request
+except ImportError:  # pragma: no cover - supports Vercel top-level module import
+    from agent import build_bl_reviewer_agent, OpenAICompatibleBLReviewerAgent
+    from input_parser import parse_review_request
 
 
 class N8nReviewPayload(BaseModel):
