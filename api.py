@@ -23,10 +23,10 @@ import traceback
 import sys
 
 try:
-    from .agent import HybridBLReviewerAgent, OpenAICompatibleBLReviewerAgent, build_bl_reviewer_agent
+    from .agent import build_bl_reviewer_agent, OpenAICompatibleBLReviewerAgent
     from .input_parser import parse_review_request
 except ImportError:  # pragma: no cover - supports Vercel top-level module import
-    from agent import HybridBLReviewerAgent, OpenAICompatibleBLReviewerAgent, build_bl_reviewer_agent
+    from agent import build_bl_reviewer_agent, OpenAICompatibleBLReviewerAgent
     from input_parser import parse_review_request
 
 
@@ -66,10 +66,10 @@ app.add_middleware(
 def global_exception_handler(request: Request, exc: Exception):
     """Return a JSON response containing the stack trace for debugging on Vercel.
 
-    NOTE: This exposes internal traces and should be removed or restricted in
-    production. It's intended to help debug the Vercel serverless function crash.
+    FIX: Uses format_exception(exc) instead of format_exc() to prevent 'NoneType: None' 
+    masking at the middleware boundary.
     """
-    tb = traceback.format_exc()
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     LOGGER.exception("Unhandled exception: %s", exc)
     return JSONResponse(status_code=500, content={"detail": "FUNCTION_INVOCATION_FAILED", "trace": tb})
 
@@ -120,14 +120,20 @@ class HealthResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Agent singleton
+# Global Agent Singleton Cache
 # ---------------------------------------------------------------------------
 
-def _get_agent() -> HybridBLReviewerAgent:
-    api_key = os.getenv("LLM_GATEWAY_API_KEY")
-    base_url = os.getenv("LLM_GATEWAY_BASE_URL", "https://imllm.intermesh.net/v1")
-    model = os.getenv("LLM_GATEWAY_MODEL", "google/gemini-3-flash-preview")
-    return build_bl_reviewer_agent(model=model, api_key=api_key, base_url=base_url)
+_CACHED_AGENT: Any = None
+
+def _get_agent() -> Any:
+    """Returns a globally cached agent instance to prevent re-initializing FastEmbed on every request."""
+    global _CACHED_AGENT
+    if _CACHED_AGENT is None:
+        api_key = os.getenv("LLM_GATEWAY_API_KEY")
+        base_url = os.getenv("LLM_GATEWAY_BASE_URL", "https://imllm.intermesh.net/v1")
+        model = os.getenv("LLM_GATEWAY_MODEL", "google/gemini-3-flash-preview")
+        _CACHED_AGENT = build_bl_reviewer_agent(model=model, api_key=api_key, base_url=base_url)
+    return _CACHED_AGENT
 
 
 # ---------------------------------------------------------------------------
@@ -156,19 +162,17 @@ def review_single(body: N8nReviewPayload) -> ReviewResult:
     Review a single buy lead.
 
     Accepts structured fields: `offer_id`, `title`, `mcat`, `isq_filled`, `isq_asked`.
-
-    Returns:
-    - **flags**: list of flag names that were raised
-    - **concise_reason**: short human-readable explanation (< 20 words)
     """
-    agent = _get_agent()
     payload = body.model_dump(exclude_none=True)
     try:
+        # Crucial fix: Agent retrieval is moved inside the try block to cleanly capture errors
+        agent = _get_agent()
         request = parse_review_request(payload)
         result = agent.review(request)
     except Exception as exc:
         LOGGER.exception("Review failed for offer_id=%s", body.offer_id)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+        
     return ReviewResult(
         offer_id=result.get("offer_id"),
         flags=result["flags"],
@@ -180,15 +184,12 @@ def review_single(body: N8nReviewPayload) -> ReviewResult:
 def review_batch(body: BatchRequest) -> BatchResult:
     """
     Review multiple buy leads in one call.
-
-    Each lead in the `leads` array is reviewed independently.
-    Results are returned in the same order as the input.
     """
-    agent = _get_agent()
     results: list[ReviewResult] = []
     for lead in body.leads:
         payload = lead.model_dump(exclude_none=True)
         try:
+            agent = _get_agent()
             request = parse_review_request(payload)
             result = agent.review(request)
             results.append(
