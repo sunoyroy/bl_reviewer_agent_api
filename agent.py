@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import urllib.error
 import urllib.request
 from typing import Any
 
-# Import lightweight serverless embedding libraries
+# ==============================================================================
+# CRITICAL VERCEL FIX: Force all AI caching to the writable /tmp directory
+# These MUST be set before importing fastembed or numpy.
+# ==============================================================================
+os.environ["HF_HOME"] = "/tmp/hf_cache"
+os.environ["FASTEMBED_CACHE_PATH"] = "/tmp/fastembed_cache"
+os.environ["TRANSFORMERS_CACHE"] = "/tmp/transformers_cache"
+os.environ["NUMEXPR_MAX_THREADS"] = "1"
+
 try:
     import numpy as np
     from fastembed import TextEmbedding
@@ -19,27 +28,19 @@ except ImportError:  # pragma: no cover
     from prompt import BATCH_SYSTEM_PROMPT, build_reviewer_prompt
 
 
-# ---------------------------------------------------------------------------
-# BI Layer: Free Serverless Embedding Engine
-# ---------------------------------------------------------------------------
-
 class LocalEmbeddingEngine:
     def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
-        # Vercel's environment is read-only EXCEPT for the /tmp folder.
-        # We explicitly force FastEmbed to use /tmp to cache the model.
-        self.model = TextEmbedding(model_name=model_name, cache_dir="/tmp")
+        # Explicitly point the FastEmbed engine to /tmp
+        self.model = TextEmbedding(model_name=model_name, cache_dir="/tmp/fastembed_cache")
 
     def calculate_similarity(self, text1: str, text2: str) -> float:
         """Computes true semantic cosine similarity using fast local ONNX vectors."""
         if not text1.strip() or not text2.strip():
             return 0.0
             
-        # FastEmbed generates an iterable; convert text items to embedded arrays
         embeddings = list(self.model.embed([text1, text2]))
-        e1 = embeddings[0]
-        e2 = embeddings[1]
+        e1, e2 = embeddings[0], embeddings[1]
         
-        # Calculate cosine similarity using lightweight numpy math
         dot_product = np.dot(e1, e2)
         norm_a = np.linalg.norm(e1)
         norm_b = np.linalg.norm(e2)
@@ -49,10 +50,6 @@ class LocalEmbeddingEngine:
             
         return float(dot_product / (norm_a * norm_b))
 
-
-# ---------------------------------------------------------------------------
-# LLM Agent
-# ---------------------------------------------------------------------------
 
 class OpenAICompatibleBLReviewerAgent:
     def __init__(self, model: str, api_key: str, base_url: str) -> None:
@@ -66,19 +63,13 @@ class OpenAICompatibleBLReviewerAgent:
             "temperature": 0,
             "messages": [
                 {"role": "system", "content": BATCH_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": build_reviewer_prompt(request),
-                },
+                {"role": "user", "content": build_reviewer_prompt(request)},
             ],
         }
         http_request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
             method="POST",
         )
 
@@ -102,15 +93,10 @@ class OpenAICompatibleBLReviewerAgent:
         }
 
 
-# ---------------------------------------------------------------------------
-# Hybrid BI Orchestrator
-# ---------------------------------------------------------------------------
-
 class HybridBLReviewerAgent:
     def __init__(self, llm_agent: OpenAICompatibleBLReviewerAgent, threshold: float = 0.45) -> None:
         self.llm_agent = llm_agent
         self.threshold = threshold
-        # Instantiates our lightweight ONNX embedding engine
         self.bi_engine = LocalEmbeddingEngine()
 
     def review(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -118,10 +104,9 @@ class HybridBLReviewerAgent:
         title = str(request.get("title") or "")
         mcat = str(request.get("mcat") or "")
 
-        # Compute semantic similarity locally on Vercel serverless for free
+        # Compute semantic similarity locally on Vercel using FastEmbed
         similarity = self.bi_engine.calculate_similarity(title, mcat)
 
-        # If similarity satisfies threshold, bypass the LLM gateway entirely
         if similarity >= self.threshold:
             return {
                 "offer_id": offer_id,
@@ -129,7 +114,6 @@ class HybridBLReviewerAgent:
                 "concise_reason": f"BI Layer Approved: High semantic similarity match ({similarity:.2f})."
             }
         else:
-            # Send to LLM Agent if the local check flags a structural mismatch
             try:
                 return self.llm_agent.review(request)
             except Exception as e:
