@@ -6,44 +6,53 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+# Import lightweight serverless embedding libraries
+try:
+    import numpy as np
+    from fastembed import TextEmbedding
+except ImportError:
+    raise ImportError("Please ensure 'fastembed' and 'numpy' are added to your requirements.txt")
+
 try:
     from .prompt import BATCH_SYSTEM_PROMPT, build_reviewer_prompt
-except ImportError:  # pragma: no cover - supports Vercel top-level module import
+except ImportError:  # pragma: no cover
     from prompt import BATCH_SYSTEM_PROMPT, build_reviewer_prompt
 
-try:
-    from sentence_transformers import SentenceTransformer, util
-except ImportError:  # pragma: no cover - keeps the module usable without the optional dependency
-    SentenceTransformer = None
-    util = None
 
+# ---------------------------------------------------------------------------
+# BI Layer: Free Serverless Embedding Engine
+# ---------------------------------------------------------------------------
 
 class LocalEmbeddingEngine:
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
-        self.model = SentenceTransformer(model_name) if SentenceTransformer is not None else None
+    def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
+        # Vercel's environment is read-only EXCEPT for the /tmp folder.
+        # We explicitly force FastEmbed to use /tmp to cache the model.
+        self.model = TextEmbedding(model_name=model_name, cache_dir="/tmp")
 
     def calculate_similarity(self, text1: str, text2: str) -> float:
+        """Computes true semantic cosine similarity using fast local ONNX vectors."""
         if not text1.strip() or not text2.strip():
             return 0.0
-
-        if self.model is None or util is None:
-            return self._fallback_similarity(text1, text2)
-
-        embedding1 = self.model.encode(text1, convert_to_tensor=True)
-        embedding2 = self.model.encode(text2, convert_to_tensor=True)
-        similarity = util.cos_sim(embedding1, embedding2)
-        return float(similarity.item())
-
-    def _fallback_similarity(self, text1: str, text2: str) -> float:
-        tokens1 = set(re.findall(r"[a-z0-9]+", text1.lower()))
-        tokens2 = set(re.findall(r"[a-z0-9]+", text2.lower()))
-        if not tokens1 or not tokens2:
+            
+        # FastEmbed generates an iterable; convert text items to embedded arrays
+        embeddings = list(self.model.embed([text1, text2]))
+        e1 = embeddings[0]
+        e2 = embeddings[1]
+        
+        # Calculate cosine similarity using lightweight numpy math
+        dot_product = np.dot(e1, e2)
+        norm_a = np.linalg.norm(e1)
+        norm_b = np.linalg.norm(e2)
+        
+        if norm_a == 0 or norm_b == 0:
             return 0.0
-        union = tokens1 | tokens2
-        if not union:
-            return 0.0
-        return len(tokens1 & tokens2) / len(union)
+            
+        return float(dot_product / (norm_a * norm_b))
 
+
+# ---------------------------------------------------------------------------
+# LLM Agent
+# ---------------------------------------------------------------------------
 
 class OpenAICompatibleBLReviewerAgent:
     def __init__(self, model: str, api_key: str, base_url: str) -> None:
@@ -93,10 +102,15 @@ class OpenAICompatibleBLReviewerAgent:
         }
 
 
+# ---------------------------------------------------------------------------
+# Hybrid BI Orchestrator
+# ---------------------------------------------------------------------------
+
 class HybridBLReviewerAgent:
     def __init__(self, llm_agent: OpenAICompatibleBLReviewerAgent, threshold: float = 0.45) -> None:
         self.llm_agent = llm_agent
         self.threshold = threshold
+        # Instantiates our lightweight ONNX embedding engine
         self.bi_engine = LocalEmbeddingEngine()
 
     def review(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -104,23 +118,26 @@ class HybridBLReviewerAgent:
         title = str(request.get("title") or "")
         mcat = str(request.get("mcat") or "")
 
+        # Compute semantic similarity locally on Vercel serverless for free
         similarity = self.bi_engine.calculate_similarity(title, mcat)
 
+        # If similarity satisfies threshold, bypass the LLM gateway entirely
         if similarity >= self.threshold:
             return {
                 "offer_id": offer_id,
                 "flags": [],
-                "concise_reason": f"BI Layer: High semantic similarity match ({similarity:.2f}).",
+                "concise_reason": f"BI Layer Approved: High semantic similarity match ({similarity:.2f})."
             }
-
-        try:
-            return self.llm_agent.review(request)
-        except Exception as exc:
-            return {
-                "offer_id": offer_id,
-                "flags": ["title_mcat_mismatch"],
-                "concise_reason": f"BI Layer: Cosine similarity low ({similarity:.2f}). LLM fallback failed: {exc}",
-            }
+        else:
+            # Send to LLM Agent if the local check flags a structural mismatch
+            try:
+                return self.llm_agent.review(request)
+            except Exception as e:
+                return {
+                    "offer_id": offer_id,
+                    "flags": ["title_mcat_mismatch"],
+                    "concise_reason": f"BI Layer Mismatch: Cosine similarity low ({similarity:.2f}). LLM fallback failed: {e}",
+                }
 
 
 def build_bl_reviewer_agent(
@@ -128,12 +145,13 @@ def build_bl_reviewer_agent(
     model: str,
     api_key: str | None,
     base_url: str | None,
-    nlp_threshold: float = 0.45,
+    nlp_threshold: float = 0.45
 ) -> HybridBLReviewerAgent:
-    if not api_key or not base_url:
-        llm_agent = OpenAICompatibleBLReviewerAgent(model=model, api_key=api_key or "", base_url=base_url or "https://example.invalid")
-        return HybridBLReviewerAgent(llm_agent=llm_agent, threshold=nlp_threshold)
-
+    if not api_key:
+        raise ValueError("API key is required.")
+    if not base_url:
+        raise ValueError("LLM base URL is required. Set LLM_GATEWAY_BASE_URL.")
+    
     llm_agent = OpenAICompatibleBLReviewerAgent(model=model, api_key=api_key, base_url=base_url)
     return HybridBLReviewerAgent(llm_agent=llm_agent, threshold=nlp_threshold)
 
