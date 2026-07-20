@@ -23,10 +23,10 @@ import traceback
 import sys
 
 try:
-    from .agent import build_bl_reviewer_agent, OpenAICompatibleBLReviewerAgent
+    from .agent import HybridBLReviewerAgent, OpenAICompatibleBLReviewerAgent, build_bl_reviewer_agent
     from .input_parser import parse_review_request
 except ImportError:  # pragma: no cover - supports Vercel top-level module import
-    from agent import build_bl_reviewer_agent, OpenAICompatibleBLReviewerAgent
+    from agent import HybridBLReviewerAgent, OpenAICompatibleBLReviewerAgent, build_bl_reviewer_agent
     from input_parser import parse_review_request
 
 
@@ -123,7 +123,7 @@ class HealthResponse(BaseModel):
 # Agent singleton
 # ---------------------------------------------------------------------------
 
-def _get_agent() -> OpenAICompatibleBLReviewerAgent:
+def _get_agent() -> HybridBLReviewerAgent:
     api_key = os.getenv("LLM_GATEWAY_API_KEY")
     base_url = os.getenv("LLM_GATEWAY_BASE_URL", "https://imllm.intermesh.net/v1")
     model = os.getenv("LLM_GATEWAY_MODEL", "google/gemini-3-flash-preview")
