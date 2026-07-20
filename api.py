@@ -58,7 +58,7 @@ def _get_agent() -> Any:
     if _CACHED_AGENT is None:
         api_key = os.getenv("LLM_GATEWAY_API_KEY")
         base_url = os.getenv("LLM_GATEWAY_BASE_URL", "[https://imllm.intermesh.net/v1](https://imllm.intermesh.net/v1)")
-        model = os.getenv("LLM_GATEWAY_MODEL", "flex/openrouter/google/gemini-3-flash-preview")
+        model = os.getenv("LLM_GATEWAY_MODEL", "flex/openrouter/flex/openrouter/google/gemini-3-flash-preview")
         _CACHED_AGENT = build_bl_reviewer_agent(model=model, api_key=api_key, base_url=base_url)
     return _CACHED_AGENT
 
