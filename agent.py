@@ -16,11 +16,13 @@ os.environ["FASTEMBED_CACHE_PATH"] = "/tmp/fastembed_cache"
 os.environ["TRANSFORMERS_CACHE"] = "/tmp/transformers_cache"
 os.environ["NUMEXPR_MAX_THREADS"] = "1"
 
+BI_AVAILABLE = False
 try:
     import numpy as np
     from fastembed import TextEmbedding
+    BI_AVAILABLE = True
 except ImportError:
-    raise ImportError("Please ensure 'fastembed' and 'numpy' are added to your requirements.txt")
+    pass
 
 try:
     from .prompt import BATCH_SYSTEM_PROMPT, build_reviewer_prompt
@@ -29,9 +31,10 @@ except ImportError:  # pragma: no cover
 
 
 class LocalEmbeddingEngine:
-    def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
-        # Explicitly point the FastEmbed engine to /tmp
-        self.model = TextEmbedding(model_name=model_name, cache_dir="/tmp/fastembed_cache")
+    def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5"):
+        # Explicitly point the FastEmbed engine to /tmp and restrict threading.
+        # threads=1 is CRITICAL for Vercel to prevent OS Error 30 during freeze/thaw.
+        self.model = TextEmbedding(model_name=model_name, cache_dir="/tmp/fastembed_cache", threads=1)
 
     def calculate_similarity(self, text1: str, text2: str) -> float:
         """Computes true semantic cosine similarity using fast local ONNX vectors."""
@@ -94,34 +97,50 @@ class OpenAICompatibleBLReviewerAgent:
 
 
 class HybridBLReviewerAgent:
-    def __init__(self, llm_agent: OpenAICompatibleBLReviewerAgent, threshold: float = 0.45) -> None:
+    def __init__(self, llm_agent: OpenAICompatibleBLReviewerAgent, threshold: float = 0.60) -> None:
         self.llm_agent = llm_agent
         self.threshold = threshold
-        self.bi_engine = LocalEmbeddingEngine()
+        self.bi_engine = None
+        
+        # Graceful Initialization: If Vercel blocks the model, don't crash the whole app.
+        if BI_AVAILABLE:
+            try:
+                self.bi_engine = LocalEmbeddingEngine()
+            except Exception as e:
+                print(f"BI Initialization skipped due to environment limits: {e}")
 
     def review(self, request: dict[str, Any]) -> dict[str, Any]:
         offer_id = str(request.get("offer_id") or request.get("metadata", {}).get("offer_id") or "")
+        
+        # If BI failed to load, route directly to LLM to guarantee n8n gets a response
+        if not self.bi_engine:
+            return self.llm_agent.review(request)
+
         title = str(request.get("title") or "")
         mcat = str(request.get("mcat") or "")
 
-        # Compute semantic similarity locally on Vercel using FastEmbed
-        similarity = self.bi_engine.calculate_similarity(title, mcat)
+        try:
+            # Compute semantic similarity locally on Vercel using FastEmbed
+            similarity = self.bi_engine.calculate_similarity(title, mcat)
 
-        if similarity >= self.threshold:
-            return {
-                "offer_id": offer_id,
-                "flags": [],
-                "concise_reason": f"BI Layer Approved: High semantic similarity match ({similarity:.2f})."
-            }
-        else:
-            try:
-                return self.llm_agent.review(request)
-            except Exception as e:
+            if similarity >= self.threshold:
                 return {
                     "offer_id": offer_id,
-                    "flags": ["title_mcat_mismatch"],
-                    "concise_reason": f"BI Layer Mismatch: Cosine similarity low ({similarity:.2f}). LLM fallback failed: {e}",
+                    "flags": [],
+                    "concise_reason": f"BI Layer Approved: High semantic similarity match ({similarity:.2f})."
                 }
+        except Exception:
+            pass # Fallthrough to LLM on BI failure
+
+        # If similarity is low, or the BI math crashed, fallback to LLM
+        try:
+            return self.llm_agent.review(request)
+        except Exception as e:
+            return {
+                "offer_id": offer_id,
+                "flags": ["title_mcat_mismatch"],
+                "concise_reason": f"BI Layer Mismatch: Cosine similarity low. LLM fallback failed: {e}",
+            }
 
 
 def build_bl_reviewer_agent(

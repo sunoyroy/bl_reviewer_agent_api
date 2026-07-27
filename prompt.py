@@ -41,6 +41,8 @@ except Exception:  # pragma: no cover - fallback for standalone deployments
 BATCH_SYSTEM_PROMPT = """"You are Buy Lead Reviewer Agent.
 Review each IndiaMART buy lead using title, mcat, isq_filled, and isq_asked.
 
+**Note: Inputs fields may contain hinglish language, Indian brands handle them correctly.**
+
 Compare:
 1. title vs mcat
 2. mcat vs every filled ISQ answer
