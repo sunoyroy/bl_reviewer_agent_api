@@ -31,13 +31,14 @@ except ImportError:  # pragma: no cover
 
 
 class LocalEmbeddingEngine:
-    def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5"):
-        # Explicitly point the FastEmbed engine to /tmp and restrict threading.
-        # threads=1 is CRITICAL for Vercel to prevent OS Error 30 during freeze/thaw.
+    def __init__(self, model_name: str = "BAAI/bge-m3"):
+        # BAAI/bge-m3 is natively supported by FastEmbed for exceptional 
+        # multilingual and code-switched (Hinglish) performance.
+        # threads=1 is CRITICAL for Vercel to prevent OS Error 30.
         self.model = TextEmbedding(model_name=model_name, cache_dir="/tmp/fastembed_cache", threads=1)
 
     def calculate_similarity(self, text1: str, text2: str) -> float:
-        """Computes true semantic cosine similarity using fast local ONNX vectors."""
+        """Computes semantic cosine similarity supporting Hinglish/Multilingual text."""
         if not text1.strip() or not text2.strip():
             return 0.0
             
@@ -102,17 +103,15 @@ class HybridBLReviewerAgent:
         self.threshold = threshold
         self.bi_engine = None
         
-        # Graceful Initialization: If Vercel blocks the model, don't crash the whole app.
         if BI_AVAILABLE:
             try:
-                self.bi_engine = LocalEmbeddingEngine()
+                self.bi_engine = LocalEmbeddingEngine(model_name="BAAI/bge-m3")
             except Exception as e:
                 print(f"BI Initialization skipped due to environment limits: {e}")
 
     def review(self, request: dict[str, Any]) -> dict[str, Any]:
         offer_id = str(request.get("offer_id") or request.get("metadata", {}).get("offer_id") or "")
         
-        # If BI failed to load, route directly to LLM to guarantee n8n gets a response
         if not self.bi_engine:
             return self.llm_agent.review(request)
 
@@ -120,7 +119,7 @@ class HybridBLReviewerAgent:
         mcat = str(request.get("mcat") or "")
 
         try:
-            # Compute semantic similarity locally on Vercel using FastEmbed
+            # Compute semantic similarity locally on Vercel using FastEmbed (Hinglish Supported)
             similarity = self.bi_engine.calculate_similarity(title, mcat)
 
             if similarity >= self.threshold:
@@ -132,7 +131,6 @@ class HybridBLReviewerAgent:
         except Exception:
             pass # Fallthrough to LLM on BI failure
 
-        # If similarity is low, or the BI math crashed, fallback to LLM
         try:
             return self.llm_agent.review(request)
         except Exception as e:
