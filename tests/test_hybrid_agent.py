@@ -7,7 +7,7 @@ from bl_reviewer_agent.agent import HybridBLReviewerAgent
 class HybridBLReviewerAgentTests(unittest.TestCase):
     def test_skips_llm_for_high_similarity_matches(self):
         llm_agent = Mock()
-        agent = HybridBLReviewerAgent(llm_agent=llm_agent, threshold=0.45)
+        agent = HybridBLReviewerAgent(llm_agent=llm_agent, threshold=0.60)
 
         with patch.object(agent.bi_engine, "calculate_similarity", return_value=0.92):
             result = agent.review({

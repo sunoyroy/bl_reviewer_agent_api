@@ -129,7 +129,7 @@ def build_bl_reviewer_agent(
     model: str,
     api_key: str | None,
     base_url: str | None,
-    nlp_threshold: float = 0.45
+    nlp_threshold: float = 0.60
 ) -> HybridBLReviewerAgent:
     if not api_key:
         raise ValueError("API key is required.")
