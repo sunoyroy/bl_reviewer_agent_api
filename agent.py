@@ -94,6 +94,7 @@ class OpenAICompatibleBLReviewerAgent:
             "offer_id": str(report.get("offer_id") or request.get("metadata", {}).get("offer_id") or request.get("offer_id") or ""),
             "flags": flags,
             "concise_reason": str(report.get("concise_reason") or ""),
+            "overall_confidence": float(report.get("overall_confidence", 0.95)) # Provide LLM default
         }
 
 
@@ -126,18 +127,21 @@ class HybridBLReviewerAgent:
                 return {
                     "offer_id": offer_id,
                     "flags": [],
-                    "concise_reason": f"BI Layer Approved: High semantic similarity match ({similarity:.2f})."
+                    "concise_reason": "Title and mcat are semantically consistent.",
+                    "overall_confidence": round(similarity, 2) # Pass the exact Cosine Similarity as confidence
                 }
         except Exception:
             pass # Fallthrough to LLM on BI failure
 
         try:
+            # If routed to LLM, the LLM sets its own confidence and reason
             return self.llm_agent.review(request)
         except Exception as e:
             return {
                 "offer_id": offer_id,
                 "flags": ["title_mcat_mismatch"],
-                "concise_reason": f"BI Layer Mismatch: Cosine similarity low. LLM fallback failed: {e}",
+                "concise_reason": f"System Error: LLM fallback failed: {e}",
+                "overall_confidence": 0.0
             }
 
 
