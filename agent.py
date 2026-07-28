@@ -138,7 +138,7 @@ class HybridBLReviewerAgent:
         # SCENARIO B: Score < 0.60, OR BI Engine completely failed to load
         try:
             llm_response = self.llm_agent.review(request)
-            
+            similarity = self.bi_engine.calculate_similarity(title, mcat)
             # ABSOLUTE OVERRIDE:
             # We strictly force the overall_confidence to be the semantic similarity score.
             # If the math ran, it overwrites the LLM with the actual low score (e.g. 0.15).
