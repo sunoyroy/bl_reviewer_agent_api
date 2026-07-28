@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover
 
 
 class LocalEmbeddingEngine:
-    def __init__(self, model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"):
+    def __init__(self, model_name: str = "BAAI/bge-m3"):
         # This is the lightweight multilingual model. It fits in Vercel memory
         # and correctly calculates semantic similarity for Hinglish & English.
         # threads=1 is CRITICAL for Vercel to prevent OS Error 30 during freeze/thaw.
