@@ -28,7 +28,7 @@ except ImportError:
 
 
 class LocalEmbeddingEngine:
-    def __init__(self, model_name: str = "BAAI/bge-m3"):
+    def __init__(self, model_name: str = "intfloat/multilingual-e5-small"):
         self.model = TextEmbedding(
             model_name=model_name,
             cache_dir="/tmp/fastembed_cache",
