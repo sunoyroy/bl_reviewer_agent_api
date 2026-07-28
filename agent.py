@@ -9,7 +9,6 @@ from typing import Any
 
 # ==============================================================================
 # CRITICAL VERCEL FIX: Force all AI caching to the writable /tmp directory
-# These MUST be set before importing fastembed or numpy.
 # ==============================================================================
 os.environ["HF_HOME"] = "/tmp/hf_cache"
 os.environ["FASTEMBED_CACHE_PATH"] = "/tmp/fastembed_cache"
@@ -29,18 +28,19 @@ except ImportError:  # pragma: no cover
 
 
 class LocalEmbeddingEngine:
-    def __init__(self, model_name: str = "intfloat/multilingual-e5-small"):
-        # Explicitly point the FastEmbed engine to /tmp
+    def __init__(self, model_name: str = "MultilingualE5Small"):
+        # Use the alias identifier for FastEmbed, pointing to /tmp
         self.model = TextEmbedding(model_name=model_name, cache_dir="/tmp/fastembed_cache")
 
     def calculate_similarity(self, text1: str, text2: str) -> float:
-        """Computes true semantic cosine similarity using fast local ONNX vectors."""
+        """Computes true semantic cosine similarity."""
         if not text1.strip() or not text2.strip():
             return 0.0
             
         embeddings = list(self.model.embed([text1, text2]))
-        e1, e2 = embeddings[0], embeddings[1]
+        if len(embeddings) < 2: return 0.0
         
+        e1, e2 = embeddings[0], embeddings[1]
         dot_product = np.dot(e1, e2)
         norm_a = np.linalg.norm(e1)
         norm_b = np.linalg.norm(e2)
@@ -73,22 +73,15 @@ class OpenAICompatibleBLReviewerAgent:
             method="POST",
         )
 
-        try:
-            with urllib.request.urlopen(http_request, timeout=180) as response:
-                raw_response = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"LLM gateway request failed with HTTP {exc.code}: {detail}") from exc
+        with urllib.request.urlopen(http_request, timeout=180) as response:
+            raw_response = json.loads(response.read().decode("utf-8"))
 
         content = raw_response["choices"][0]["message"]["content"]
         report = extract_json_object(content)
 
-        raw_flags = report.get("flags") or []
-        flags: list[str] = [str(f) for f in raw_flags if isinstance(f, str)]
-
         return {
             "offer_id": str(report.get("offer_id") or request.get("metadata", {}).get("offer_id") or request.get("offer_id") or ""),
-            "flags": flags,
+            "flags": [str(f) for f in (report.get("flags") or []) if isinstance(f, str)],
             "concise_reason": str(report.get("concise_reason") or ""),
         }
 
@@ -104,40 +97,38 @@ class HybridBLReviewerAgent:
         title = str(request.get("title") or "")
         mcat = str(request.get("mcat") or "")
 
-        # Compute semantic similarity locally on Vercel using FastEmbed
+        # Compute semantic similarity locally
         similarity = self.bi_engine.calculate_similarity(title, mcat)
+        sim_val = round(float(similarity), 2)
 
         if similarity >= self.threshold:
             return {
                 "offer_id": offer_id,
                 "flags": [],
-                "concise_reason": f"BI Layer Approved: High semantic similarity match ({similarity:.2f})."
+                "concise_reason": f"BI Layer Approved: High semantic similarity match ({sim_val}).",
+                "overall_confidence": sim_val
             }
         else:
             try:
-                return self.llm_agent.review(request)
+                res = self.llm_agent.review(request)
+                res["overall_confidence"] = sim_val
+                return res
             except Exception as e:
                 return {
                     "offer_id": offer_id,
                     "flags": ["title_mcat_mismatch"],
-                    "concise_reason": f"BI Layer Mismatch: Cosine similarity low ({similarity:.2f}). LLM fallback failed: {e}",
+                    "concise_reason": f"BI Layer Mismatch: Cosine similarity low ({sim_val}). LLM fallback failed: {e}",
+                    "overall_confidence": sim_val
                 }
 
 
-def build_bl_reviewer_agent(
-    *,
-    model: str,
-    api_key: str | None,
-    base_url: str | None,
-    nlp_threshold: float = 0.60
-) -> HybridBLReviewerAgent:
-    if not api_key:
-        raise ValueError("API key is required.")
-    if not base_url:
-        raise ValueError("LLM base URL is required. Set LLM_GATEWAY_BASE_URL.")
-    
-    llm_agent = OpenAICompatibleBLReviewerAgent(model=model, api_key=api_key, base_url=base_url)
-    return HybridBLReviewerAgent(llm_agent=llm_agent, threshold=nlp_threshold)
+def build_bl_reviewer_agent(*, model: str, api_key: str | None, base_url: str | None, nlp_threshold: float = 0.60) -> HybridBLReviewerAgent:
+    if not api_key or not base_url:
+        raise ValueError("API key and base URL are required.")
+    return HybridBLReviewerAgent(
+        llm_agent=OpenAICompatibleBLReviewerAgent(model=model, api_key=api_key, base_url=base_url),
+        threshold=nlp_threshold
+    )
 
 
 def extract_json_object(content: str) -> dict[str, Any]:
@@ -148,10 +139,7 @@ def extract_json_object(content: str) -> dict[str, Any]:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            raise
+        start, end = text.find("{"), text.rfind("}")
         parsed = json.loads(text[start : end + 1])
     if not isinstance(parsed, dict):
         raise ValueError("LLM response must be a JSON object.")
