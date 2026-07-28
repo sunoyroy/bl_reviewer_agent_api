@@ -94,7 +94,8 @@ class OpenAICompatibleBLReviewerAgent:
             "offer_id": str(report.get("offer_id") or request.get("metadata", {}).get("offer_id") or request.get("offer_id") or ""),
             "flags": flags,
             "concise_reason": str(report.get("concise_reason") or ""),
-            "overall_confidence": float(report.get("overall_confidence", 0.95)) # Provide LLM default
+            # We remove the hardcoded 0.95 LLM confidence here, 
+            # because the Hybrid Agent will now inject the semantic score.
         }
 
 
@@ -112,36 +113,38 @@ class HybridBLReviewerAgent:
 
     def review(self, request: dict[str, Any]) -> dict[str, Any]:
         offer_id = str(request.get("offer_id") or request.get("metadata", {}).get("offer_id") or "")
-        
-        if not self.bi_engine:
-            return self.llm_agent.review(request)
-
         title = str(request.get("title") or "")
         mcat = str(request.get("mcat") or "")
 
-        try:
-            # Compute semantic similarity locally on Vercel using FastEmbed (Hinglish Supported)
-            similarity = self.bi_engine.calculate_similarity(title, mcat)
+        # Default similarity to 0.0 in case the BI engine fails to load
+        similarity = 0.0
 
-            if similarity >= self.threshold:
-                return {
-                    "offer_id": offer_id,
-                    "flags": [],
-                    "concise_reason": "Title and mcat are semantically consistent.",
-                    "overall_confidence": round(similarity, 2) # Pass the exact Cosine Similarity as confidence
-                }
-        except Exception:
-            pass # Fallthrough to LLM on BI failure
+        if self.bi_engine:
+            try:
+                # Compute semantic similarity locally on Vercel
+                similarity = self.bi_engine.calculate_similarity(title, mcat)
+
+                if similarity >= self.threshold:
+                    return {
+                        "offer_id": offer_id,
+                        "flags": [],
+                        "concise_reason": "Title and mcat are semantically consistent.",
+                        "overall_confidence": round(similarity, 2) # Pass the exact Cosine Similarity
+                    }
+            except Exception:
+                pass # Fallthrough to LLM on BI failure
 
         try:
-            # If routed to LLM, the LLM sets its own confidence and reason
-            return self.llm_agent.review(request)
+            # Route to LLM, but explicitly OVERWRITE the confidence with our semantic score
+            llm_response = self.llm_agent.review(request)
+            llm_response["overall_confidence"] = round(similarity, 2)
+            return llm_response
         except Exception as e:
             return {
                 "offer_id": offer_id,
                 "flags": ["title_mcat_mismatch"],
                 "concise_reason": f"System Error: LLM fallback failed: {e}",
-                "overall_confidence": 0.0
+                "overall_confidence": round(similarity, 2)
             }
 
 
