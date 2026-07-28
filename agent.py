@@ -31,14 +31,14 @@ except ImportError:  # pragma: no cover
 
 
 class LocalEmbeddingEngine:
-    def __init__(self, model_name: str = "BAAI/bge-m3"):
-        # BAAI/bge-m3 is natively supported by FastEmbed for exceptional 
-        # multilingual and code-switched (Hinglish) performance.
-        # threads=1 is CRITICAL for Vercel to prevent OS Error 30.
+    def __init__(self, model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"):
+        # This is the lightweight multilingual model. It fits in Vercel memory
+        # and correctly calculates semantic similarity for Hinglish & English.
+        # threads=1 is CRITICAL for Vercel to prevent OS Error 30 during freeze/thaw.
         self.model = TextEmbedding(model_name=model_name, cache_dir="/tmp/fastembed_cache", threads=1)
 
     def calculate_similarity(self, text1: str, text2: str) -> float:
-        """Computes semantic cosine similarity supporting Hinglish/Multilingual text."""
+        """Computes true semantic cosine similarity using fast local ONNX vectors."""
         if not text1.strip() or not text2.strip():
             return 0.0
             
@@ -94,8 +94,7 @@ class OpenAICompatibleBLReviewerAgent:
             "offer_id": str(report.get("offer_id") or request.get("metadata", {}).get("offer_id") or request.get("offer_id") or ""),
             "flags": flags,
             "concise_reason": str(report.get("concise_reason") or ""),
-            # We remove the hardcoded 0.95 LLM confidence here, 
-            # because the Hybrid Agent will now inject the semantic score.
+            "overall_confidence": float(report.get("overall_confidence", 0.0))
         }
 
 
@@ -105,9 +104,10 @@ class HybridBLReviewerAgent:
         self.threshold = threshold
         self.bi_engine = None
         
+        # Graceful Initialization: If Vercel blocks the model, don't crash the whole app.
         if BI_AVAILABLE:
             try:
-                self.bi_engine = LocalEmbeddingEngine(model_name="BAAI/bge-m3")
+                self.bi_engine = LocalEmbeddingEngine()
             except Exception as e:
                 print(f"BI Initialization skipped due to environment limits: {e}")
 
@@ -115,8 +115,8 @@ class HybridBLReviewerAgent:
         offer_id = str(request.get("offer_id") or request.get("metadata", {}).get("offer_id") or "")
         title = str(request.get("title") or "")
         mcat = str(request.get("mcat") or "")
-
-        # Default similarity to 0.0 in case the BI engine fails to load
+        
+        # Default similarity to 0.0
         similarity = 0.0
 
         if self.bi_engine:
@@ -125,19 +125,26 @@ class HybridBLReviewerAgent:
                 similarity = self.bi_engine.calculate_similarity(title, mcat)
 
                 if similarity >= self.threshold:
+                    # SCENARIO A: Score >= 0.60. Auto-Approve.
                     return {
                         "offer_id": offer_id,
                         "flags": [],
-                        "concise_reason": "Title and mcat are semantically consistent.",
-                        "overall_confidence": round(similarity, 2) # Pass the exact Cosine Similarity
+                        "concise_reason": f"BI Layer Approved: High semantic similarity match.",
+                        "overall_confidence": round(similarity, 2) # <-- Actual Semantic Score
                     }
             except Exception:
-                pass # Fallthrough to LLM on BI failure
+                pass # Fallthrough to LLM on BI math crash
 
+        # SCENARIO B: Score < 0.60, OR BI Engine completely failed to load
         try:
-            # Route to LLM, but explicitly OVERWRITE the confidence with our semantic score
             llm_response = self.llm_agent.review(request)
-            llm_response["overall_confidence"] = round(similarity, 2)
+            
+            # ABSOLUTE OVERRIDE:
+            # We strictly force the overall_confidence to be the semantic similarity score.
+            # If the math ran, it overwrites the LLM with the actual low score (e.g. 0.15).
+            # If the BI engine crashed and couldn't run, it safely outputs 0.0.
+            llm_response["overall_confidence"] = round(similarity, 2) # <-- Actual Semantic Score
+                
             return llm_response
         except Exception as e:
             return {
