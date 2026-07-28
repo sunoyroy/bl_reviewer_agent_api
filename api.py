@@ -31,6 +31,16 @@ class N8nReviewPayload(BaseModel):
     attributes_combined: str | None = Field(default=None)
 
 
+# ==============================================================================
+# UPDATED: Pydantic model to explicitly include overall_confidence
+# ==============================================================================
+class ReviewResult(BaseModel):
+    offer_id: str | None = Field(default=None, examples=["146420001285"])
+    flags: list[str]
+    concise_reason: str
+    overall_confidence: float | None = Field(default=None)
+
+
 LOGGER = logging.getLogger(__name__)
 
 app = FastAPI(title="Buy Lead Reviewer Agent API", version="1.0.0")
@@ -57,7 +67,7 @@ def _get_agent() -> Any:
     global _CACHED_AGENT
     if _CACHED_AGENT is None:
         api_key = os.getenv("LLM_GATEWAY_API_KEY")
-        base_url = os.getenv("LLM_GATEWAY_BASE_URL", "[https://imllm.intermesh.net/v1](https://imllm.intermesh.net/v1)")
+        base_url = os.getenv("LLM_GATEWAY_BASE_URL", "https://imllm.intermesh.net/v1")
         model = os.getenv("LLM_GATEWAY_MODEL", "flex/openrouter/google/gemini-3-flash-preview")
         _CACHED_AGENT = build_bl_reviewer_agent(model=model, api_key=api_key, base_url=base_url)
     return _CACHED_AGENT
@@ -73,18 +83,24 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/review", response_model=dict, tags=["Review"])
-def review_single(body: N8nReviewPayload) -> dict:
+# ==============================================================================
+# UPDATED: Return the ReviewResult model instead of a generic dict
+# ==============================================================================
+@app.post("/review", response_model=ReviewResult, tags=["Review"])
+def review_single(body: N8nReviewPayload) -> ReviewResult:
     try:
         agent = _get_agent()
         payload = body.model_dump(exclude_none=True)
         request = parse_review_request(payload)
         result = agent.review(request)
-        return {
-            "offer_id": result.get("offer_id"),
-            "flags": result.get("flags", []),
-            "concise_reason": result.get("concise_reason", "")
-        }
+        
+        # Explicitly return the structured model
+        return ReviewResult(
+            offer_id=result.get("offer_id"),
+            flags=result.get("flags", []),
+            concise_reason=result.get("concise_reason", "No reason provided."),
+            overall_confidence=result.get("overall_confidence")
+        )
     except Exception as exc:
         LOGGER.exception("Review failed for offer_id=%s", body.offer_id)
         raise HTTPException(status_code=500, detail=f"Request failed: {repr(exc)}")
@@ -107,7 +123,8 @@ def review_batch(body: dict) -> dict:
             results.append({
                 "offer_id": result.get("offer_id"),
                 "flags": result.get("flags", []),
-                "concise_reason": result.get("concise_reason", "")
+                "concise_reason": result.get("concise_reason", "No reason provided."),
+                "overall_confidence": result.get("overall_confidence")
             })
         except Exception as exc:
             offer_id = lead.get("offer_id", "")
@@ -115,6 +132,7 @@ def review_batch(body: dict) -> dict:
             results.append({
                 "offer_id": offer_id,
                 "flags": [],
-                "concise_reason": f"Error: {repr(exc)[:120]}"
+                "concise_reason": f"Error: {repr(exc)[:120]}",
+                "overall_confidence": 0.0
             })
     return {"results": results}
