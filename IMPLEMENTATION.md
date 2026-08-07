@@ -92,3 +92,21 @@ The project is natively optimized for **Vercel** serverless hosting. The include
 4. Follow the prompts. Once deployed, run `vercel env add` to add your LLM API keys to the production environment, then run `vercel --prod` to push it live.
 
 *Note on Vercel Constraints:* The backend explicitly forces `HF_HOME`, `FASTEMBED_CACHE_PATH`, and `TRANSFORMERS_CACHE` to the `/tmp` directory because Vercel's serverless filesystem is completely read-only except for the `/tmp` folder.
+
+---
+
+### Hosting the Frontend UI
+
+Because the backend and frontend are currently in the same repository but use different technologies, the easiest approach is to create a **second Vercel project** specifically for the `frontend` directory.
+
+**Important First Step:** The frontend currently hardcodes its API path to `/api` (which relies on Vite's local proxy). Before deploying the frontend, you must edit `frontend/src/services/api.ts`:
+Change: `const BASE = "/api";`
+To: `const BASE = import.meta.env.VITE_API_URL || "/api";`
+
+**Deploying the Frontend:**
+1. In the Vercel Dashboard, click **Add New... > Project** and import the exact same GitHub repository.
+2. Under **Framework Preset**, ensure **Vite** is selected.
+3. Under **Root Directory**, click edit and select the `frontend` folder.
+4. Expand **Environment Variables** and add:
+   - `VITE_API_URL` pointing to your live backend URL (e.g., `https://bl-reviewer-agent-api-psi.vercel.app`)
+5. Click **Deploy**. Your React interface will now be live on its own URL and communicate safely with your backend API!
