@@ -59,7 +59,36 @@ The frontend is located in the `frontend/` directory and is built using modern w
 
 ---
 
-## Deployment & Configuration
+## Data Flow & Storage (Sheets/CSV)
 
-- **Vercel Integration:** The project includes a `vercel.json` file to facilitate immediate deployment. The backend is configured to operate within Vercel's serverless function constraints (e.g., 180s timeout handling and `/tmp` filesystem limits).
-- **Dependencies:** Specified in `requirements.txt`. Key dependencies include `fastapi`, `pydantic`, `fastembed`, and `numpy`.
+The API is strictly stateless and does not contain a database. However, data persistence and "sheet" storage occur downstream through three distinct flows:
+
+1. **N8N Google Sheets Automation (Primary):** The API is designed to be called by an N8N workflow (as seen in `Docs/Auditor (2).json`). N8N reads raw leads, sends them to this API (which expects an `N8nReviewPayload`), parses the JSON review results, and subsequently uses the `n8n-nodes-base.googleSheets` node to **append or update rows directly in a Google Sheet**.
+2. **Offline Batch CSV:** For massive bulk reviews, `batch_review.py` processes JSON/CSV payloads and outputs the LLM reviews directly into local `.csv` files (e.g., `combined_model_results.csv`) via the standard Python `csv.DictWriter`.
+3. **Frontend Export:** The Vite React frontend allows users to manually upload CSVs, process them, and download the resulting reviews as a new `.csv` blob directly from the browser.
+
+---
+
+## Deployment & Vercel Hosting Configuration
+
+The project is natively optimized for **Vercel** serverless hosting. The included `vercel.json` uses the `@vercel/python` runtime to route all incoming traffic directly to `api.py`.
+
+### How to Host this API Live on Vercel:
+
+**Method 1: via GitHub (Recommended)**
+1. Ensure your repository is pushed to GitHub (e.g., `https://github.com/sunoyroy/bl_reviewer_agent_api`).
+2. Log into the [Vercel Dashboard](https://vercel.com/) and click **Add New... > Project**.
+3. Import your GitHub repository.
+4. **Crucial Step:** Before clicking deploy, expand the **Environment Variables** section and add:
+   - `LLM_GATEWAY_API_KEY` (Your Gemini or Gateway API Key)
+   - `LLM_GATEWAY_BASE_URL` (Optional if using Gemini directly: `https://generativelanguage.googleapis.com/v1beta/openai/`)
+   - `LLM_GATEWAY_MODEL` (e.g., `gemini-1.5-flash`)
+5. Click **Deploy**. Vercel will automatically read `vercel.json`, install `requirements.txt`, and expose your API on a live URL.
+
+**Method 2: via Vercel CLI**
+1. Install the CLI via npm: `npm i -g vercel`
+2. Run `vercel login` to authenticate in your terminal.
+3. Navigate to the project root in your terminal and run the command: `vercel`
+4. Follow the prompts. Once deployed, run `vercel env add` to add your LLM API keys to the production environment, then run `vercel --prod` to push it live.
+
+*Note on Vercel Constraints:* The backend explicitly forces `HF_HOME`, `FASTEMBED_CACHE_PATH`, and `TRANSFORMERS_CACHE` to the `/tmp` directory because Vercel's serverless filesystem is completely read-only except for the `/tmp` folder.
