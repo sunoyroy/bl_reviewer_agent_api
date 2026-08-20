@@ -28,3 +28,6 @@ Auditor (2).json
 *.log
 .vercel
 .env*
+
+# Local-only Excel dashboard (do not commit)
+front-end Excel/

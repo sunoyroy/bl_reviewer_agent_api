@@ -4,6 +4,7 @@ import datetime
 import requests
 import psycopg2
 import psycopg2.extras
+import pandas as pd
 from dotenv import load_dotenv
 
 # Load environment variables from .env
@@ -29,88 +30,118 @@ def get_db_connection():
     )
 
 def fetch_leads():
-    # Calculate yesterday's date to match N8N logic: {{ $now.minus({ days: 1 }).toFormat('yyyy-MM-dd') }}
+    # Calculate yesterday's date to match N8N logic
     yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
     print(f"Fetching leads for date: {yesterday}")
 
-    # Note: Double curly braces {{ }} are used to escape single braces for Python's f-string parsing where necessary.
-    query = f"""
-    WITH filtered_offers AS (
-        SELECT
-            feo.eto_ofr_display_id,
-            feo.eto_ofr_title,
-            dgm.glcat_mcat_name
-        FROM (
-            SELECT
-                eto_ofr_display_id,
-                eto_ofr_title,
-                eto_ofr_modrefid,
-                eto_ofr_mcat_id,
-                eto_ofr_approv_date_orig
-            FROM im_dwh_rpt.fact_eto_ofr_expired
-            WHERE DATE(eto_ofr_approv_date_orig) = DATE '{yesterday}'
-              AND eto_leap_emp_id = '-14'
-
-            UNION ALL
-
-            SELECT
-                eto_ofr_display_id,
-                eto_ofr_title,
-                eto_ofr_modrefid,
-                eto_ofr_mcat_id,
-                eto_ofr_approv_date_orig
-            FROM im_dwh_rpt.fact_eto_ofr_live
-            WHERE DATE(eto_ofr_approv_date_orig) = DATE '{yesterday}'
-              AND eto_leap_emp_id = '-14'
-        ) feo
-        JOIN im_dwh_rpt.fact_pc_item fpi
-            ON feo.eto_ofr_modrefid = fpi.pc_item_display_id
-        LEFT JOIN im_dwh_rpt.fact_pc_item_to_glcat_mcat fpitgm
-            ON fpi.pc_item_id = fpitgm.fk_pc_item_id
-        LEFT JOIN im_dwh_rpt.dim_glcat_mcat dgm
-            ON feo.eto_ofr_mcat_id = dgm.glcat_mcat_id
-        WHERE fpitgm.fk_pc_item_id IS NULL
-          AND dgm.glcat_mcat_name IS NOT NULL
-          AND LOWER(TRIM(feo.eto_ofr_title)) <> LOWER(TRIM(dgm.glcat_mcat_name))
-    ),
-
-    attribute_data AS (
-        SELECT
-            fk_eto_ofr_display_id,
-            REPLACE(COALESCE(fk_im_spec_master_desc,''), '"', '\\"') AS question,
-            REPLACE(COALESCE(fk_im_spec_options_desc,''), '"', '\\"') AS answer
-        FROM im_dwh_rpt.fact_eto_attribute
-        WHERE eto_attribute_source BETWEEN 1 AND 199
-           OR eto_attribute_source IN (204,205,206,208,210,215,218,220,221,250,991,999)
-    )
-
-    SELECT
-        fo.eto_ofr_display_id AS offer_id,
-        fo.eto_ofr_title AS title,
-        fo.glcat_mcat_name AS mcat,
-        COALESCE(
-            '{{' ||
-            LISTAGG(
-                '"' || ad.question || '":"' || ad.answer || '"',
-                ','
-            ) WITHIN GROUP (ORDER BY ad.question)
-            || '}}',
-            '{{}}'
-        ) AS isq_filled
-    FROM filtered_offers fo
-    LEFT JOIN attribute_data ad
-        ON fo.eto_ofr_display_id = ad.fk_eto_ofr_display_id
-    GROUP BY
-        fo.eto_ofr_display_id,
-        fo.eto_ofr_title,
-        fo.glcat_mcat_name
-    ORDER BY
-        random()
-    LIMIT 100;
-    """
-
     conn = get_db_connection()
     try:
+        # 1. Determine which optional columns exist in the fact_pc_item table
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM im_dwh_rpt.fact_pc_item LIMIT 0")
+            available_columns = {desc[0] for desc in cur.description}
+            
+        optional_fields = ['pc_item_desc_small', 'pc_item_img_original']
+        
+        # Build the dynamic select statements
+        fpi_selects = []
+        fo_selects = []
+        for field in optional_fields:
+            if field in available_columns:
+                fpi_selects.append(f"fpi.{field}")
+                fo_selects.append(f"fo.{field}")
+            else:
+                fpi_selects.append(f"'' AS {field}")
+                fo_selects.append(f"fo.{field}")
+                
+        fpi_selects_sql = ",\n            ".join(fpi_selects)
+        fo_selects_sql = ",\n        ".join(fo_selects)
+
+        # 2. Build the main query
+        query = f"""
+        WITH filtered_offers AS (
+            SELECT
+                feo.eto_ofr_display_id,
+                feo.eto_ofr_title,
+                dgm.glcat_mcat_name,
+                fpi.pc_item_display_id,
+                fpi.pc_item_name,
+                {fpi_selects_sql}
+            FROM (
+                SELECT
+                    eto_ofr_display_id,
+                    eto_ofr_title,
+                    eto_ofr_modrefid,
+                    eto_ofr_mcat_id,
+                    eto_ofr_approv_date_orig
+                FROM im_dwh_rpt.fact_eto_ofr_expired
+                WHERE DATE(eto_ofr_approv_date_orig) = DATE '{yesterday}'
+                  AND eto_leap_emp_id = '-14'
+
+                UNION ALL
+
+                SELECT
+                    eto_ofr_display_id,
+                    eto_ofr_title,
+                    eto_ofr_modrefid,
+                    eto_ofr_mcat_id,
+                    eto_ofr_approv_date_orig
+                FROM im_dwh_rpt.fact_eto_ofr_live
+                WHERE DATE(eto_ofr_approv_date_orig) = DATE '{yesterday}'
+                  AND eto_leap_emp_id = '-14'
+            ) feo
+            JOIN im_dwh_rpt.fact_pc_item fpi
+                ON feo.eto_ofr_modrefid = fpi.pc_item_display_id
+            LEFT JOIN im_dwh_rpt.fact_pc_item_to_glcat_mcat fpitgm
+                ON fpi.pc_item_id = fpitgm.fk_pc_item_id
+            LEFT JOIN im_dwh_rpt.dim_glcat_mcat dgm
+                ON feo.eto_ofr_mcat_id = dgm.glcat_mcat_id
+            WHERE fpitgm.fk_pc_item_id IS NULL
+              AND dgm.glcat_mcat_name IS NOT NULL
+              AND LOWER(TRIM(feo.eto_ofr_title)) <> LOWER(TRIM(dgm.glcat_mcat_name))
+        ),
+
+        attribute_data AS (
+            SELECT
+                fk_eto_ofr_display_id,
+                REPLACE(COALESCE(fk_im_spec_master_desc,''), '"', '\\"') AS question,
+                REPLACE(COALESCE(fk_im_spec_options_desc,''), '"', '\\"') AS answer
+            FROM im_dwh_rpt.fact_eto_attribute
+            WHERE eto_attribute_source BETWEEN 1 AND 199
+               OR eto_attribute_source IN (204,205,206,208,210,215,218,220,221,250,991,999)
+        )
+
+        SELECT
+            fo.eto_ofr_display_id AS offer_id,
+            fo.eto_ofr_title AS title,
+            fo.glcat_mcat_name AS mcat,
+            COALESCE(
+                '{{' ||
+                LISTAGG(
+                    '"' || ad.question || '":"' || ad.answer || '"',
+                    ','
+                ) WITHIN GROUP (ORDER BY ad.question)
+                || '}}',
+                '{{}}'
+            ) AS isq_filled,
+            fo.pc_item_display_id,
+            fo.pc_item_name,
+            {fo_selects_sql}
+        FROM filtered_offers fo
+        LEFT JOIN attribute_data ad
+            ON fo.eto_ofr_display_id = ad.fk_eto_ofr_display_id
+        GROUP BY
+            fo.eto_ofr_display_id,
+            fo.eto_ofr_title,
+            fo.glcat_mcat_name,
+            fo.pc_item_display_id,
+            fo.pc_item_name,
+            {fo_selects_sql}
+        ORDER BY
+            random()
+        LIMIT 100;
+        """
+
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             cur.execute(query)
             rows = cur.fetchall()
@@ -121,10 +152,10 @@ def fetch_leads():
 
 
 def process_lead(lead, date_str):
-    offer_id = lead.get('offer_id', '')
-    title = lead.get('title', '')
-    mcat = lead.get('mcat', '')
-    isq_filled_raw = lead.get('isq_filled', '{}')
+    offer_id = str(lead.get('offer_id', ''))
+    title = str(lead.get('title', ''))
+    mcat = str(lead.get('mcat', ''))
+    isq_filled_raw = str(lead.get('isq_filled', '{}'))
     
     # Try parsing the ISQ json string from the DB if possible
     try:
@@ -152,15 +183,21 @@ def process_lead(lead, date_str):
         }
 
     # Map the output just like the N8N Google Sheets Node mapping
+    # Column order matches the Google Sheets schema defined in Docs/Auditor (2).json
     return {
         "OfferID": offer_id,
+        "Date": date_str,
         "Title": title,
         "MCAT": mcat,
-        "Date": date_str,
-        "Flags": api_result.get("flags", []),
-        "reason": api_result.get("concise_reason", ""),
         "ISQ": isq_filled_raw,
-        "confidence": api_result.get("overall_confidence", None)
+        "Flags": ", ".join(api_result.get("flags", [])),
+        "reason": api_result.get("concise_reason", ""),
+        "confidence": api_result.get("overall_confidence", None),
+        "Display id product": str(lead.get('pc_item_display_id', '')),
+        "pc_item_name": str(lead.get('pc_item_name', '')),
+        "pc_item_desc_small": str(lead.get('pc_item_desc_small', '')),
+        "pc_item_img_original": str(lead.get('pc_item_img_original', '')),
+        "specs_json": isq_filled_raw
     }
 
 
@@ -181,11 +218,27 @@ def main():
         processed = process_lead(lead, today_str)
         results.append(processed)
 
-    output_file = "n8n_simulation_results.json"
-    with open(output_file, 'w', encoding='utf-8') as f:
+    output_json = "n8n_simulation_results.json"
+    output_xlsx = "n8n_simulation_results.xlsx"
+    
+    with open(output_json, 'w', encoding='utf-8') as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
         
-    print(f"Processing complete! N8N simulation results saved to {output_file}")
+    # Enforce consistent column ordering matching the Google Sheets schema
+    column_order = [
+        "OfferID", "Date", "Title", "MCAT", "ISQ", "Flags", "reason",
+        "confidence", "Display id product", "pc_item_name",
+        "pc_item_desc_small", "pc_item_img_original", "specs_json"
+    ]
+    df = pd.DataFrame(results)
+    # Reorder columns, adding any that might be missing with empty values
+    for col in column_order:
+        if col not in df.columns:
+            df[col] = ''
+    df = df[column_order]
+    df.to_excel(output_xlsx, index=False)
+        
+    print(f"Processing complete! Results saved to {output_json} and {output_xlsx}")
 
 
 if __name__ == "__main__":
