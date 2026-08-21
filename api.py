@@ -6,10 +6,14 @@ import os
 import sys
 from typing import Any
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+
+# Load local .env for LLM_GATEWAY_* when running outside Vercel
+load_dotenv()
 
 try:
     from .agent import build_bl_reviewer_agent

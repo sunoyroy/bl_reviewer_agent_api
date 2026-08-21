@@ -10,8 +10,12 @@ from dotenv import load_dotenv
 # Load environment variables from .env
 load_dotenv()
 
-# Vercel API endpoint
-API_URL = "https://bl-reviewer-agent-api-psi.vercel.app/review"
+# Remote n8n-style endpoint (same as Auditor HTTP Request node / psi deploy)
+API_URL = os.getenv("API_URL", "https://bl-reviewer-agent-api-psi.vercel.app/review")
+
+# local = call HybridBLReviewerAgent in-process (LLM fallback works with VPN/Groq .env)
+# remote = POST to Vercel like Auditor (2).json (LLM may 403 if Intermesh blocks Vercel IPs)
+REVIEW_MODE = os.getenv("REVIEW_MODE", "local").strip().lower()
 
 # Database connection parameters
 DB_HOST = os.getenv("DB_HOST", "localhost")
@@ -19,6 +23,41 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "postgres")
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASS = os.getenv("DB_PASS", "")
+
+_LOCAL_AGENT = None
+
+
+def _get_local_agent():
+    """Build the same hybrid agent the API uses, so low title↔mcat similarity hits LLM."""
+    global _LOCAL_AGENT
+    if _LOCAL_AGENT is not None:
+        return _LOCAL_AGENT
+
+    from agent import build_bl_reviewer_agent
+
+    api_key = os.getenv("LLM_GATEWAY_API_KEY")
+    base_url = os.getenv("LLM_GATEWAY_BASE_URL", "https://imllm.intermesh.net/v1")
+    model = os.getenv("LLM_GATEWAY_MODEL", "flex/openrouter/google/gemini-3-flash-preview")
+    if not api_key:
+        raise ValueError("REVIEW_MODE=local requires LLM_GATEWAY_API_KEY in .env")
+
+    _LOCAL_AGENT = build_bl_reviewer_agent(model=model, api_key=api_key, base_url=base_url)
+    print(f"Local agent ready | model={model} | base_url={base_url}")
+    return _LOCAL_AGENT
+
+
+def review_lead(payload: dict) -> dict:
+    """Review one lead via local agent (default) or remote /review."""
+    if REVIEW_MODE == "remote":
+        response = requests.post(API_URL, json=payload, timeout=60)
+        response.raise_for_status()
+        return response.json()
+
+    from input_parser import parse_review_request
+
+    agent = _get_local_agent()
+    request = parse_review_request(payload)
+    return agent.review(request)
 
 def get_db_connection():
     return psycopg2.connect(
@@ -171,9 +210,15 @@ def process_lead(lead, date_str):
     }
 
     try:
-        response = requests.post(API_URL, json=payload, timeout=60)
-        response.raise_for_status()
-        api_result = response.json()
+        api_result = review_lead(payload)
+        reason = str(api_result.get("concise_reason", "") or "")
+        if reason.startswith("BI Layer Approved"):
+            path = "BI"
+        elif "LLM fallback failed" in reason:
+            path = "LLM_FAILED"
+        else:
+            path = "LLM"
+        print(f"  -> {path} | flags={api_result.get('flags')} | conf={api_result.get('overall_confidence')}")
     except Exception as e:
         print(f"API request failed for offer_id {offer_id}: {e}")
         api_result = {
@@ -202,6 +247,7 @@ def process_lead(lead, date_str):
 
 
 def main():
+    print(f"REVIEW_MODE={REVIEW_MODE}" + (f" | API_URL={API_URL}" if REVIEW_MODE == "remote" else " | using local HybridBLReviewerAgent"))
     try:
         leads = fetch_leads()
         print(f"Successfully fetched {len(leads)} leads from the database.")
@@ -212,11 +258,21 @@ def main():
 
     today_str = datetime.datetime.now().strftime('%Y-%m-%d')
     results = []
+    path_counts = {"BI": 0, "LLM": 0, "LLM_FAILED": 0, "ERROR": 0}
 
     for i, lead in enumerate(leads, 1):
         print(f"Processing lead {i}/{len(leads)} (Offer ID: {lead.get('offer_id')})...")
         processed = process_lead(lead, today_str)
         results.append(processed)
+        reason = str(processed.get("reason", "") or "")
+        if reason.startswith("API Error"):
+            path_counts["ERROR"] += 1
+        elif reason.startswith("BI Layer Approved"):
+            path_counts["BI"] += 1
+        elif "LLM fallback failed" in reason:
+            path_counts["LLM_FAILED"] += 1
+        else:
+            path_counts["LLM"] += 1
 
     output_json = "n8n_simulation_results.json"
     output_xlsx = "n8n_simulation_results.xlsx"
@@ -239,6 +295,7 @@ def main():
     df.to_excel(output_xlsx, index=False)
         
     print(f"Processing complete! Results saved to {output_json} and {output_xlsx}")
+    print(f"Path summary: BI={path_counts['BI']} LLM={path_counts['LLM']} LLM_FAILED={path_counts['LLM_FAILED']} ERROR={path_counts['ERROR']}")
 
 
 if __name__ == "__main__":
