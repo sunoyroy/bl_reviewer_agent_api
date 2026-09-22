@@ -31,3 +31,9 @@ Auditor (2).json
 
 # Local-only Excel dashboard (do not commit)
 front-end Excel/
+
+# Local untracked scripts / data
+bl-quality.xlsx
+fetch_offer_payload.py
+n8n_main.py
+read_cols.py
