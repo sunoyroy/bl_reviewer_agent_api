@@ -33,6 +33,9 @@ class N8nReviewPayload(BaseModel):
     eto_ofr_title: str | None = Field(default=None)
     glcat_mcat_name: str | None = Field(default=None)
     attributes_combined: str | None = Field(default=None)
+    # Original product title (before BL/MCAT title rewrite) — Layer 2 input
+    pc_item_name: str | None = Field(default=None)
+    original_product_title: str | None = Field(default=None)
 
 
 # ==============================================================================
@@ -43,6 +46,9 @@ class ReviewResult(BaseModel):
     flags: list[str]
     concise_reason: str
     overall_confidence: float | None = Field(default=None)
+    layer2_triggered: bool | None = Field(default=None)
+    layer2_similarity: float | None = Field(default=None)
+    layer2_result: str | None = Field(default=None)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -73,7 +79,13 @@ def _get_agent() -> Any:
         api_key = os.getenv("LLM_GATEWAY_API_KEY")
         base_url = os.getenv("LLM_GATEWAY_BASE_URL", "https://imllm.intermesh.net/v1")
         model = os.getenv("LLM_GATEWAY_MODEL", "flex/openrouter/google/gemini-3-flash-preview")
-        _CACHED_AGENT = build_bl_reviewer_agent(model=model, api_key=api_key, base_url=base_url)
+        nlp_threshold = float(os.getenv("NLP_THRESHOLD", "0.60"))
+        _CACHED_AGENT = build_bl_reviewer_agent(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            nlp_threshold=nlp_threshold,
+        )
     return _CACHED_AGENT
 
 
@@ -103,7 +115,10 @@ def review_single(body: N8nReviewPayload) -> ReviewResult:
             offer_id=result.get("offer_id"),
             flags=result.get("flags", []),
             concise_reason=result.get("concise_reason", "No reason provided."),
-            overall_confidence=result.get("overall_confidence")
+            overall_confidence=result.get("overall_confidence"),
+            layer2_triggered=result.get("layer2_triggered"),
+            layer2_similarity=result.get("layer2_similarity"),
+            layer2_result=result.get("layer2_result"),
         )
     except Exception as exc:
         LOGGER.exception("Review failed for offer_id=%s", body.offer_id)
@@ -128,7 +143,10 @@ def review_batch(body: dict) -> dict:
                 "offer_id": result.get("offer_id"),
                 "flags": result.get("flags", []),
                 "concise_reason": result.get("concise_reason", "No reason provided."),
-                "overall_confidence": result.get("overall_confidence")
+                "overall_confidence": result.get("overall_confidence"),
+                "layer2_triggered": result.get("layer2_triggered"),
+                "layer2_similarity": result.get("layer2_similarity"),
+                "layer2_result": result.get("layer2_result"),
             })
         except Exception as exc:
             offer_id = lead.get("offer_id", "")
@@ -137,6 +155,9 @@ def review_batch(body: dict) -> dict:
                 "offer_id": offer_id,
                 "flags": [],
                 "concise_reason": f"Error: {repr(exc)[:120]}",
-                "overall_confidence": 0.0
+                "overall_confidence": 0.0,
+                "layer2_triggered": False,
+                "layer2_similarity": None,
+                "layer2_result": "error",
             })
     return {"results": results}

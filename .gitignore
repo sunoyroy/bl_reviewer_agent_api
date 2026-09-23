@@ -37,3 +37,14 @@ bl-quality.xlsx
 fetch_offer_payload.py
 n8n_main.py
 read_cols.py
+
+# Simulator + Excel results (local only)
+n8n_simulator.py
+n8n_simulation_results.json
+n8n_simulation_results.xlsx
+*.xlsx
+
+# Local test / DB probe scripts
+tests/
+test_*.py
+check_db.py

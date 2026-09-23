@@ -91,47 +91,179 @@ class OpenAICompatibleBLReviewerAgent:
 
 
 class HybridBLReviewerAgent:
-    def __init__(self, llm_agent: OpenAICompatibleBLReviewerAgent, threshold: float = 0.45) -> None:
+    def __init__(
+        self,
+        llm_agent: OpenAICompatibleBLReviewerAgent,
+        threshold: float = 0.60,
+        layer2_enabled: bool | None = None,
+    ) -> None:
         self.llm_agent = llm_agent
         self.threshold = threshold
         self.bi_engine = LocalEmbeddingEngine()
+        if layer2_enabled is None:
+            layer2_enabled = os.getenv("LAYER2_ENABLED", "true").strip().lower() not in {
+                "0",
+                "false",
+                "no",
+                "off",
+            }
+        self.layer2_enabled = layer2_enabled
+
+    def _original_product_title(self, request: dict[str, Any]) -> str:
+        metadata = request.get("metadata") if isinstance(request.get("metadata"), dict) else {}
+        return str(
+            request.get("original_product_title")
+            or request.get("pc_item_name")
+            or metadata.get("original_product_title")
+            or metadata.get("pc_item_name")
+            or ""
+        ).strip()
+
+    def _layer2_validate(
+        self,
+        *,
+        offer_id: str,
+        original_title: str,
+        mcat: str,
+        layer1_sim: float,
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Independently validate Original Product Title vs MCAT after Layer 1 BI approve."""
+        try:
+            similarity = self.bi_engine.calculate_similarity(original_title, mcat)
+            sim2 = round(float(similarity), 2)
+            # High Layer2: confirm approve only when original-product vs MCAT > threshold
+            if sim2 > self.threshold:
+                return {
+                    "offer_id": offer_id,
+                    "flags": [],
+                    "concise_reason": (
+                        f"BI+Layer2 Approved: BL-MCAT ({layer1_sim}) and "
+                        f"original-product-MCAT ({sim2}) both match."
+                    ),
+                    "overall_confidence": layer1_sim,
+                    "layer2_triggered": True,
+                    "layer2_similarity": sim2,
+                    "layer2_result": "match",
+                }
+
+            # Low Layer2: escalate to LLM (judge original product title vs MCAT / ISQ)
+            try:
+                layer2_request = dict(request)
+                layer2_request["title"] = original_title
+                layer2_request["original_product_title"] = original_title
+                res = self.llm_agent.review(layer2_request)
+                res["overall_confidence"] = layer1_sim
+                res["layer2_triggered"] = True
+                res["layer2_similarity"] = sim2
+                res["layer2_result"] = "llm"
+                if not res.get("concise_reason"):
+                    res["concise_reason"] = (
+                        f"Layer2 low similarity ({sim2}); LLM review of original product title."
+                    )
+                else:
+                    res["concise_reason"] = (
+                        f"Layer2 low ({sim2}) → LLM: {res['concise_reason']}"
+                    )
+                return res
+            except Exception as llm_exc:
+                # LLM failure on Layer2: keep Layer1 BI approve (failure-safe)
+                return {
+                    "offer_id": offer_id,
+                    "flags": [],
+                    "concise_reason": (
+                        f"BI Layer Approved: High semantic similarity match ({layer1_sim}). "
+                        f"Layer2 LLM failed after low original-product-MCAT ({sim2}): {llm_exc}"
+                    ),
+                    "overall_confidence": layer1_sim,
+                    "layer2_triggered": True,
+                    "layer2_similarity": sim2,
+                    "layer2_result": "llm_error_fallback",
+                }
+        except Exception as exc:
+            # Embedding failure: keep Layer 1 BI approval when Layer 2 cannot run.
+            return {
+                "offer_id": offer_id,
+                "flags": [],
+                "concise_reason": (
+                    f"BI Layer Approved: High semantic similarity match ({layer1_sim}). "
+                    f"Layer2 skipped due to error: {exc}"
+                ),
+                "overall_confidence": layer1_sim,
+                "layer2_triggered": True,
+                "layer2_similarity": None,
+                "layer2_result": "error_fallback",
+            }
 
     def review(self, request: dict[str, Any]) -> dict[str, Any]:
         offer_id = str(request.get("offer_id") or request.get("metadata", {}).get("offer_id") or "")
         title = str(request.get("title") or "")
         mcat = str(request.get("mcat") or "")
 
-        # Compute semantic similarity locally
+        # Layer 1: BL Title vs MCAT
         similarity = self.bi_engine.calculate_similarity(title, mcat)
         sim_val = round(float(similarity), 2)
 
         if similarity >= self.threshold:
-            return {
+            base = {
                 "offer_id": offer_id,
                 "flags": [],
                 "concise_reason": f"BI Layer Approved: High semantic similarity match ({sim_val}).",
-                "overall_confidence": sim_val
+                "overall_confidence": sim_val,
+                "layer2_triggered": False,
+                "layer2_similarity": None,
+                "layer2_result": "skipped",
             }
-        else:
-            try:
-                res = self.llm_agent.review(request)
-                res["overall_confidence"] = sim_val
-                return res
-            except Exception as e:
-                return {
-                    "offer_id": offer_id,
-                    "flags": ["title_mcat_mismatch"],
-                    "concise_reason": f"BI Layer Mismatch: Cosine similarity low ({sim_val}). LLM fallback failed: {e}",
-                    "overall_confidence": sim_val
-                }
+
+            # Layer 2: only when Layer 1 confidence is strictly above threshold and
+            # original title exists. BI path is >= threshold; Layer 2 requires > threshold.
+            if not self.layer2_enabled or sim_val <= self.threshold:
+                return base
+
+            original_title = self._original_product_title(request)
+            if not original_title:
+                base["layer2_result"] = "skipped_missing_original_title"
+                return base
+
+            return self._layer2_validate(
+                offer_id=offer_id,
+                original_title=original_title,
+                mcat=mcat,
+                layer1_sim=sim_val,
+                request=request,
+            )
+
+        try:
+            res = self.llm_agent.review(request)
+            res["overall_confidence"] = sim_val
+            res["layer2_triggered"] = False
+            res["layer2_similarity"] = None
+            res["layer2_result"] = "not_applicable"
+            return res
+        except Exception as e:
+            return {
+                "offer_id": offer_id,
+                "flags": ["title_mcat_mismatch"],
+                "concise_reason": f"BI Layer Mismatch: Cosine similarity low ({sim_val}). LLM fallback failed: {e}",
+                "overall_confidence": sim_val,
+                "layer2_triggered": False,
+                "layer2_similarity": None,
+                "layer2_result": "not_applicable",
+            }
 
 
-def build_bl_reviewer_agent(*, model: str, api_key: str | None, base_url: str | None, nlp_threshold: float = 0.60) -> HybridBLReviewerAgent:
+def build_bl_reviewer_agent(
+    *,
+    model: str,
+    api_key: str | None,
+    base_url: str | None,
+    nlp_threshold: float = 0.60,
+) -> HybridBLReviewerAgent:
     if not api_key or not base_url:
         raise ValueError("API key and base URL are required.")
     return HybridBLReviewerAgent(
         llm_agent=OpenAICompatibleBLReviewerAgent(model=model, api_key=api_key, base_url=base_url),
-        threshold=nlp_threshold
+        threshold=nlp_threshold,
     )
 
 
