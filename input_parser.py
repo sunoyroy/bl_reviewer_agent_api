@@ -9,28 +9,15 @@ from typing import Any
 
 def parse_review_request(payload: dict[str, Any]) -> dict[str, Any]:
     raw = payload.get("PARAMS") or payload.get("vendor_json") or payload.get("response") or payload.get("data") or payload
-    # BL Title only — do NOT alias PRODUCT_NAME/PRODUCT_TITLE here (those are original product).
     title = _first_present(
         raw,
         payload,
-        ("title", "TITLE", "AST_SELLER_TITLE", "eto_ofr_title"),
+        ("title", "TITLE", "PRODUCT_NAME", "PRODUCT_TITLE", "AST_SELLER_TITLE", "eto_ofr_title"),
     )
     mcat = _first_present(
         raw,
         payload,
         ("mcat", "MCAT", "MCAT_NAME", "CATEGORY", "CATEGORY_NAME", "glcat_mcat_name"),
-    )
-    original_product_title = _first_present(
-        raw,
-        payload,
-        (
-            "original_product_title",
-            "pc_item_name",
-            "PRODUCT_TITLE",
-            "PRODUCT_NAME",
-            "product_title",
-            "product_name",
-        ),
     )
     isq_filled = _first_present(
         raw,
@@ -49,7 +36,6 @@ def parse_review_request(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "title": str(title or ""),
         "mcat": str(mcat or ""),
-        "original_product_title": str(original_product_title or ""),
         "isq_filled": parsed_isq_filled,
         "isq_asked": parsed_isq_asked,
         "metadata": {
@@ -63,8 +49,6 @@ def parse_review_request(payload: dict[str, Any]) -> dict[str, Any]:
                 )
                 if isinstance(raw, dict)
                 else None,
-                "original_product_title": str(original_product_title).strip() if original_product_title else None,
-                "pc_item_name": str(original_product_title).strip() if original_product_title else None,
             }.items()
             if value not in (None, "", [], {})
         },
@@ -77,7 +61,6 @@ def csv_row_to_lead(row: dict[str, str]) -> dict[str, Any]:
         "offer_id": row.get("eto_ofr_display_id", ""),
         "title": row.get("eto_ofr_title", ""),
         "mcat": row.get("glcat_mcat_name", ""),
-        "original_product_title": row.get("pc_item_name", "") or row.get("original_product_title", ""),
         "isq_filled": isq_filled,
         "isq_asked": list(isq_filled.keys()),
     }

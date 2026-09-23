@@ -33,9 +33,6 @@ class N8nReviewPayload(BaseModel):
     eto_ofr_title: str | None = Field(default=None)
     glcat_mcat_name: str | None = Field(default=None)
     attributes_combined: str | None = Field(default=None)
-    # Original product title (before BL/MCAT title rewrite) — Layer 2 input
-    pc_item_name: str | None = Field(default=None)
-    original_product_title: str | None = Field(default=None)
 
 
 # ==============================================================================

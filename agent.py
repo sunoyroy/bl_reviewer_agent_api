@@ -5,6 +5,7 @@ import os
 import re
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from typing import Any
 
 # ==============================================================================
@@ -23,8 +24,10 @@ except ImportError:
 
 try:
     from .prompt import BATCH_SYSTEM_PROMPT, build_reviewer_prompt
+    from .product_title_repository import fetch_original_product_title
 except ImportError:  # pragma: no cover
     from prompt import BATCH_SYSTEM_PROMPT, build_reviewer_prompt
+    from product_title_repository import fetch_original_product_title
 
 
 class LocalEmbeddingEngine:
@@ -96,10 +99,12 @@ class HybridBLReviewerAgent:
         llm_agent: OpenAICompatibleBLReviewerAgent,
         threshold: float = 0.60,
         layer2_enabled: bool | None = None,
+        product_title_resolver: Callable[[str], str] | None = None,
     ) -> None:
         self.llm_agent = llm_agent
         self.threshold = threshold
         self.bi_engine = LocalEmbeddingEngine()
+        self.product_title_resolver = product_title_resolver or fetch_original_product_title
         if layer2_enabled is None:
             layer2_enabled = os.getenv("LAYER2_ENABLED", "true").strip().lower() not in {
                 "0",
@@ -109,15 +114,12 @@ class HybridBLReviewerAgent:
             }
         self.layer2_enabled = layer2_enabled
 
-    def _original_product_title(self, request: dict[str, Any]) -> str:
-        metadata = request.get("metadata") if isinstance(request.get("metadata"), dict) else {}
-        return str(
-            request.get("original_product_title")
-            or request.get("pc_item_name")
-            or metadata.get("original_product_title")
-            or metadata.get("pc_item_name")
-            or ""
-        ).strip()
+    def _resolve_original_product_title(self, offer_id: str) -> str:
+        """Fetch the original product title internally; never trust request data."""
+        try:
+            return str(self.product_title_resolver(offer_id) or "").strip()
+        except Exception:
+            return ""
 
     def _layer2_validate(
         self,
@@ -199,6 +201,9 @@ class HybridBLReviewerAgent:
         offer_id = str(request.get("offer_id") or request.get("metadata", {}).get("offer_id") or "")
         title = str(request.get("title") or "")
         mcat = str(request.get("mcat") or "")
+        # Option C: fetch the actual product title for every review. The public
+        # payload remains unchanged and cannot override this independent signal.
+        original_title = self._resolve_original_product_title(offer_id)
 
         # Layer 1: BL Title vs MCAT
         similarity = self.bi_engine.calculate_similarity(title, mcat)
@@ -220,7 +225,6 @@ class HybridBLReviewerAgent:
             if not self.layer2_enabled or sim_val <= self.threshold:
                 return base
 
-            original_title = self._original_product_title(request)
             if not original_title:
                 base["layer2_result"] = "skipped_missing_original_title"
                 return base
