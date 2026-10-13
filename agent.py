@@ -30,6 +30,9 @@ except ImportError:  # pragma: no cover
     from product_title_repository import fetch_original_product_title
 
 
+DISABLED_FLAGS = frozenset({"isq_filled_mcat_mismatch"})
+
+
 class LocalEmbeddingEngine:
     def __init__(self, model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"):
         # Use the alias identifier for FastEmbed, pointing to /tmp
@@ -88,7 +91,10 @@ class OpenAICompatibleBLReviewerAgent:
 
         return {
             "offer_id": str(report.get("offer_id") or request.get("metadata", {}).get("offer_id") or request.get("offer_id") or ""),
-            "flags": [str(f) for f in (report.get("flags") or []) if isinstance(f, str)],
+            "flags": [
+                str(f) for f in (report.get("flags") or [])
+                if isinstance(f, str) and f not in DISABLED_FLAGS
+            ],
             "concise_reason": str(report.get("concise_reason") or ""),
         }
 
@@ -247,12 +253,12 @@ class HybridBLReviewerAgent:
         except Exception as e:
             return {
                 "offer_id": offer_id,
-                "flags": ["title_mcat_mismatch"],
-                "concise_reason": f"BI Layer Mismatch: Cosine similarity low ({sim_val}). LLM fallback failed: {e}",
+                "flags": [],
+                "concise_reason": f"Unreviewed: LLM call failed for low similarity ({sim_val}): {e}",
                 "overall_confidence": sim_val,
                 "layer2_triggered": False,
                 "layer2_similarity": None,
-                "layer2_result": "not_applicable",
+                "layer2_result": "llm_error",
             }
 
 
