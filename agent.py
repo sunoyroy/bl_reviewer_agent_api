@@ -5,7 +5,6 @@ import os
 import re
 import urllib.error
 import urllib.request
-from collections.abc import Callable
 from typing import Any
 
 # ==============================================================================
@@ -24,10 +23,8 @@ except ImportError:
 
 try:
     from .prompt import BATCH_SYSTEM_PROMPT, build_reviewer_prompt
-    from .product_title_repository import fetch_original_product_title
 except ImportError:  # pragma: no cover
     from prompt import BATCH_SYSTEM_PROMPT, build_reviewer_prompt
-    from product_title_repository import fetch_original_product_title
 
 
 DISABLED_FLAGS = frozenset({"isq_filled_mcat_mismatch"})
@@ -100,155 +97,30 @@ class OpenAICompatibleBLReviewerAgent:
 
 
 class HybridBLReviewerAgent:
-    def __init__(
-        self,
-        llm_agent: OpenAICompatibleBLReviewerAgent,
-        threshold: float = 0.60,
-        layer2_enabled: bool | None = None,
-        product_title_resolver: Callable[[str], str] | None = None,
-    ) -> None:
+    def __init__(self, llm_agent: OpenAICompatibleBLReviewerAgent, threshold: float = 0.60) -> None:
         self.llm_agent = llm_agent
         self.threshold = threshold
         self.bi_engine = LocalEmbeddingEngine()
-        self.product_title_resolver = product_title_resolver or fetch_original_product_title
-        if layer2_enabled is None:
-            layer2_enabled = os.getenv("LAYER2_ENABLED", "true").strip().lower() not in {
-                "0",
-                "false",
-                "no",
-                "off",
-            }
-        self.layer2_enabled = layer2_enabled
-
-    def _resolve_original_product_title(self, offer_id: str) -> str:
-        """Fetch the original product title internally; never trust request data."""
-        try:
-            return str(self.product_title_resolver(offer_id) or "").strip()
-        except Exception:
-            return ""
-
-    def _layer2_validate(
-        self,
-        *,
-        offer_id: str,
-        original_title: str,
-        mcat: str,
-        layer1_sim: float,
-        request: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Independently validate Original Product Title vs MCAT after Layer 1 BI approve."""
-        try:
-            similarity = self.bi_engine.calculate_similarity(original_title, mcat)
-            sim2 = round(float(similarity), 2)
-            # High Layer2: confirm approve only when original-product vs MCAT > threshold
-            if sim2 > self.threshold:
-                return {
-                    "offer_id": offer_id,
-                    "flags": [],
-                    "concise_reason": (
-                        f"BI+Layer2 Approved: BL-MCAT ({layer1_sim}) and "
-                        f"original-product-MCAT ({sim2}) both match."
-                    ),
-                    "overall_confidence": layer1_sim,
-                    "layer2_triggered": True,
-                    "layer2_similarity": sim2,
-                    "layer2_result": "match",
-                }
-
-            # Low Layer2: escalate to LLM (judge original product title vs MCAT / ISQ)
-            try:
-                layer2_request = dict(request)
-                layer2_request["title"] = original_title
-                layer2_request["original_product_title"] = original_title
-                res = self.llm_agent.review(layer2_request)
-                res["overall_confidence"] = layer1_sim
-                res["layer2_triggered"] = True
-                res["layer2_similarity"] = sim2
-                res["layer2_result"] = "llm"
-                if not res.get("concise_reason"):
-                    res["concise_reason"] = (
-                        f"Layer2 low similarity ({sim2}); LLM review of original product title."
-                    )
-                else:
-                    res["concise_reason"] = (
-                        f"Layer2 low ({sim2}) → LLM: {res['concise_reason']}"
-                    )
-                return res
-            except Exception as llm_exc:
-                # LLM failure on Layer2: keep Layer1 BI approve (failure-safe)
-                return {
-                    "offer_id": offer_id,
-                    "flags": [],
-                    "concise_reason": (
-                        f"BI Layer Approved: High semantic similarity match ({layer1_sim}). "
-                        f"Layer2 LLM failed after low original-product-MCAT ({sim2}): {llm_exc}"
-                    ),
-                    "overall_confidence": layer1_sim,
-                    "layer2_triggered": True,
-                    "layer2_similarity": sim2,
-                    "layer2_result": "llm_error_fallback",
-                }
-        except Exception as exc:
-            # Embedding failure: keep Layer 1 BI approval when Layer 2 cannot run.
-            return {
-                "offer_id": offer_id,
-                "flags": [],
-                "concise_reason": (
-                    f"BI Layer Approved: High semantic similarity match ({layer1_sim}). "
-                    f"Layer2 skipped due to error: {exc}"
-                ),
-                "overall_confidence": layer1_sim,
-                "layer2_triggered": True,
-                "layer2_similarity": None,
-                "layer2_result": "error_fallback",
-            }
 
     def review(self, request: dict[str, Any]) -> dict[str, Any]:
         offer_id = str(request.get("offer_id") or request.get("metadata", {}).get("offer_id") or "")
         title = str(request.get("title") or "")
         mcat = str(request.get("mcat") or "")
-        # Option C: fetch the actual product title for every review. The public
-        # payload remains unchanged and cannot override this independent signal.
-        original_title = self._resolve_original_product_title(offer_id)
 
-        # Layer 1: BL Title vs MCAT
         similarity = self.bi_engine.calculate_similarity(title, mcat)
         sim_val = round(float(similarity), 2)
 
         if similarity >= self.threshold:
-            base = {
+            return {
                 "offer_id": offer_id,
                 "flags": [],
                 "concise_reason": f"BI Layer Approved: High semantic similarity match ({sim_val}).",
                 "overall_confidence": sim_val,
-                "layer2_triggered": False,
-                "layer2_similarity": None,
-                "layer2_result": "skipped",
             }
-
-            # Layer 2: only when Layer 1 confidence is strictly above threshold and
-            # original title exists. BI path is >= threshold; Layer 2 requires > threshold.
-            if not self.layer2_enabled or sim_val <= self.threshold:
-                return base
-
-            if not original_title:
-                base["layer2_result"] = "skipped_missing_original_title"
-                return base
-
-            return self._layer2_validate(
-                offer_id=offer_id,
-                original_title=original_title,
-                mcat=mcat,
-                layer1_sim=sim_val,
-                request=request,
-            )
 
         try:
             res = self.llm_agent.review(request)
             res["overall_confidence"] = sim_val
-            res["layer2_triggered"] = False
-            res["layer2_similarity"] = None
-            res["layer2_result"] = "not_applicable"
             return res
         except Exception as e:
             return {
@@ -256,9 +128,6 @@ class HybridBLReviewerAgent:
                 "flags": [],
                 "concise_reason": f"Unreviewed: LLM call failed for low similarity ({sim_val}): {e}",
                 "overall_confidence": sim_val,
-                "layer2_triggered": False,
-                "layer2_similarity": None,
-                "layer2_result": "llm_error",
             }
 
 
