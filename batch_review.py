@@ -277,7 +277,7 @@ def extract_json(content: str) -> dict[str, Any]:
 
 VALID_FLAG_NAMES: frozenset[str] = frozenset({
     "title_mcat_mismatch",
-    "isq_filled_title_mismatch",
+    # "isq_filled_title_mismatch",
     # "isq_filled_mcat_mismatch",
 })
 

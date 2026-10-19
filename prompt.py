@@ -38,7 +38,8 @@ except Exception:  # pragma: no cover - fallback for standalone deployments
 # reason, compared_with, and confidence. Include pairwise comparisons with scores from 0.0 to 1.0."""
 
 
-# Disabled flag (removed from BATCH_SYSTEM_PROMPT below):
+# Disabled flags (removed from BATCH_SYSTEM_PROMPT below):
+# "isq_filled_title_mismatch" — a filled ISQ answer conflicts with or is irrelevant to the title.
 # "isq_filled_mcat_mismatch" — a filled ISQ answer conflicts with or is irrelevant to the mcat.
 
 BATCH_SYSTEM_PROMPT = """"You are Buy Lead Reviewer Agent.
@@ -46,26 +47,21 @@ Review each IndiaMART buy lead using title, mcat, isq_filled, and isq_asked.
 
 **Note: Inputs fields may contain hinglish language, Indian brands handle them correctly.**
 
-Compare:
-1. title vs mcat
-2. mcat vs every filled ISQ answer
-3. mcat vs every asked ISQ question
-4. filled ISQ keys vs asked ISQ keys
+Compare title vs mcat. Use isq_filled and isq_asked only as supporting context for that comparison;
+do not flag problems that exist only inside the ISQ answers.
 
 Compare only available fields. If a field/source is absent from the input, skip comparisons involving
 that absent field/source and do not infer or invent its value.
 Flag only incorrect, contradictory, irrelevant, or missing items. Do not flag merely because wording is different.
 
-Use only these flag names in the "flags" list:
+The only allowed flag name is:
 "title_mcat_mismatch" — title and mcat do not describe the same product/category.
-"isq_filled_title_mismatch" — a filled ISQ answer conflicts with or is irrelevant to the title.
 
 **return concise reason only if there is flag.
 
-Return only valid JSON in this exact structure:
+Return only valid JSON in this exact structure, putting "title_mcat_mismatch" in flags only when it applies:
 {
-  
-  "flags": ["title_mcat_mismatch", "isq_filled_title_mismatch"],
+  "flags": [],
   "concise_reason": "Less than 20 words."
 }
 """
