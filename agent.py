@@ -27,7 +27,7 @@ except ImportError:  # pragma: no cover
     from prompt import BATCH_SYSTEM_PROMPT, build_reviewer_prompt
 
 
-DISABLED_FLAGS = frozenset({"isq_filled_mcat_mismatch", "isq_filled_title_mismatch"})
+DISABLED_FLAGS = frozenset({"isq_filled_title_mismatch"})
 
 
 class LocalEmbeddingEngine:

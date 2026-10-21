@@ -29,7 +29,7 @@ Every review returns:
 |---|---|
 | `title_mcat_mismatch` | Title and mcat do not describe the same product/category |
 <!-- | `isq_filled_title_mismatch` | A filled ISQ answer conflicts with or is irrelevant to the title | (disabled) -->
-<!-- | `isq_filled_mcat_mismatch` | A filled ISQ answer conflicts with or is irrelevant to the mcat | (disabled) -->
+| `isq_filled_mcat_mismatch` | A filled ISQ answer conflicts with or is irrelevant to the mcat |
 
 ---
 
